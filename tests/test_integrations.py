@@ -172,3 +172,87 @@ class TestFeatureRowDivergenceColumns:
         # Tier defaults to 1 when consensus is missing.
         assert row["triangulation_tier"] == 1
         assert row["consensus_n_books"] == 0
+
+
+class TestDetectDivergenceEvents:
+    def test_tier_change_emits_divergence_change_event(self):
+        from realtime_feature_store import LiveFeatureStore
+
+        store = LiveFeatureStore.__new__(LiveFeatureStore)
+        store.state = {
+            "games": {},
+            "markets": {},
+            "divergence": {
+                "2026-04-16|BOS|MIA": {"triangulation_tier": 1},
+            },
+        }
+
+        features_df = pd.DataFrame([{
+            "captured_at": pd.Timestamp("2026-04-16T23:00:00", tz="UTC"),
+            "game_key": "2026-04-16|BOS|MIA",
+            "ticker": "KXNBAGAME-26APR16BOSMIA-BOS",
+            "home_team": "BOS",
+            "away_team": "MIA",
+            "triangulation_tier": 2,
+            "kalshi_vs_consensus_pp": 12.0,
+            "model_vs_consensus_pp": -2.0,
+            "kalshi_vs_model_pp": 14.0,
+        }])
+
+        events = store._detect_divergence_events(features_df)
+        assert len(events) == 1
+        event = events[0]
+        assert event["event_type"] == "divergence_change"
+        assert event["entity_type"] == "divergence"
+        assert event["entity_key"] == "2026-04-16|BOS|MIA"
+        assert event["previous"]["triangulation_tier"] == 1
+        assert event["current"]["triangulation_tier"] == 2
+
+    def test_unchanged_tier_emits_no_event(self):
+        from realtime_feature_store import LiveFeatureStore
+
+        store = LiveFeatureStore.__new__(LiveFeatureStore)
+        store.state = {
+            "games": {},
+            "markets": {},
+            "divergence": {
+                "2026-04-16|BOS|MIA": {"triangulation_tier": 1},
+            },
+        }
+
+        features_df = pd.DataFrame([{
+            "captured_at": pd.Timestamp("2026-04-16T23:00:00", tz="UTC"),
+            "game_key": "2026-04-16|BOS|MIA",
+            "ticker": "KXNBAGAME-26APR16BOSMIA-BOS",
+            "home_team": "BOS",
+            "away_team": "MIA",
+            "triangulation_tier": 1,
+            "kalshi_vs_consensus_pp": 1.0,
+            "model_vs_consensus_pp": 0.5,
+            "kalshi_vs_model_pp": 1.5,
+        }])
+
+        events = store._detect_divergence_events(features_df)
+        assert events == []
+
+    def test_first_observation_emits_divergence_observed(self):
+        from realtime_feature_store import LiveFeatureStore
+
+        store = LiveFeatureStore.__new__(LiveFeatureStore)
+        store.state = {"games": {}, "markets": {}, "divergence": {}}
+
+        features_df = pd.DataFrame([{
+            "captured_at": pd.Timestamp("2026-04-16T23:00:00", tz="UTC"),
+            "game_key": "2026-04-16|BOS|MIA",
+            "ticker": "KXNBAGAME-26APR16BOSMIA-BOS",
+            "home_team": "BOS",
+            "away_team": "MIA",
+            "triangulation_tier": 2,
+            "kalshi_vs_consensus_pp": 12.0,
+            "model_vs_consensus_pp": -2.0,
+            "kalshi_vs_model_pp": 14.0,
+        }])
+
+        events = store._detect_divergence_events(features_df)
+        assert len(events) == 1
+        assert events[0]["event_type"] == "divergence_observed"

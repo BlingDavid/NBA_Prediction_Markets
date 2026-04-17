@@ -349,8 +349,28 @@ class LiveFeatureStore:
                 if row.get("ticker")
             }
 
-        STATE_PATH.write_text(json.dumps({"games": games, "markets": markets}, indent=2, default=str))
-        self.state = {"games": games, "markets": markets}
+        # Persist latest divergence tier per game_key for next-poll diffing.
+        divergence_state = {}
+        last_features = getattr(self, "_last_features_df", None)
+        if last_features is not None and not last_features.empty and "game_key" in last_features.columns:
+            latest = (
+                last_features.dropna(subset=["game_key"])
+                .sort_values("captured_at")
+                .groupby("game_key", as_index=False)
+                .tail(1)
+            )
+            for _, row in latest.iterrows():
+                game_key = row.get("game_key")
+                divergence_state[game_key] = {
+                    "triangulation_tier": _safe_int(row.get("triangulation_tier")),
+                    "kalshi_vs_consensus_pp": _safe_float(row.get("kalshi_vs_consensus_pp")),
+                    "model_vs_consensus_pp": _safe_float(row.get("model_vs_consensus_pp")),
+                    "kalshi_vs_model_pp": _safe_float(row.get("kalshi_vs_model_pp")),
+                }
+
+        state = {"games": games, "markets": markets, "divergence": divergence_state}
+        STATE_PATH.write_text(json.dumps(state, indent=2, default=str))
+        self.state = state
 
     def fetch_game_states(self, game_date: str | None = None) -> pd.DataFrame:
         captured_at = _now_utc()
@@ -1024,6 +1044,62 @@ class LiveFeatureStore:
 
         return events
 
+    def _detect_divergence_events(self, features_df: pd.DataFrame) -> list[dict]:
+        """
+        Emit divergence_change events when triangulation_tier flips between
+        polls, and divergence_observed events on first sighting.
+        """
+        if features_df.empty or "triangulation_tier" not in features_df.columns:
+            return []
+
+        events = []
+        previous = self.state.get("divergence", {})
+        captured_at = _now_utc().isoformat()
+
+        # Take the latest row per game_key to avoid duplicate events for
+        # multi-ticker matchups in the same poll cycle.
+        latest = (
+            features_df.dropna(subset=["game_key"])
+            .sort_values("captured_at")
+            .groupby("game_key", as_index=False)
+            .tail(1)
+        )
+
+        for _, row in latest.iterrows():
+            game_key = row.get("game_key")
+            tier = _safe_int(row.get("triangulation_tier"))
+            current = {
+                "triangulation_tier": tier,
+                "kalshi_vs_consensus_pp": _safe_float(row.get("kalshi_vs_consensus_pp")),
+                "model_vs_consensus_pp": _safe_float(row.get("model_vs_consensus_pp")),
+                "kalshi_vs_model_pp": _safe_float(row.get("kalshi_vs_model_pp")),
+            }
+            prev = previous.get(game_key)
+
+            if prev is None:
+                events.append({
+                    "captured_at": captured_at,
+                    "entity_type": "divergence",
+                    "event_type": "divergence_observed",
+                    "entity_key": game_key,
+                    "home_team": row.get("home_team"),
+                    "away_team": row.get("away_team"),
+                    "current": current,
+                })
+            elif prev.get("triangulation_tier") != tier:
+                events.append({
+                    "captured_at": captured_at,
+                    "entity_type": "divergence",
+                    "event_type": "divergence_change",
+                    "entity_key": game_key,
+                    "home_team": row.get("home_team"),
+                    "away_team": row.get("away_team"),
+                    "previous": prev,
+                    "current": current,
+                })
+
+        return events
+
     def capture_once(self, game_date: str | None = None) -> dict:
         games_df = self.fetch_game_states(game_date=game_date)
         markets_df = self.fetch_market_snapshots()
@@ -1031,7 +1107,8 @@ class LiveFeatureStore:
 
         game_events = self._detect_game_events(games_df)
         market_events = self._detect_market_events(markets_df)
-        events = game_events + market_events
+        divergence_events = self._detect_divergence_events(features_df)
+        events = game_events + market_events + divergence_events
 
         captured_day = _to_local_game_date(_now_utc()) or pd.Timestamp.today().strftime("%Y-%m-%d")
         games_path = LIVE_GAMES_DIR / f"game_states_{captured_day}.csv"
@@ -1048,6 +1125,7 @@ class LiveFeatureStore:
             latest_path = LIVE_FEATURES_DIR / "latest_features.csv"
             features_df.sort_values(["home_team", "away_team", "ticker"]).to_csv(latest_path, index=False)
 
+        self._last_features_df = features_df
         self._save_state(games_df, markets_df)
 
         return {
