@@ -256,3 +256,40 @@ class TestDetectDivergenceEvents:
         events = store._detect_divergence_events(features_df)
         assert len(events) == 1
         assert events[0]["event_type"] == "divergence_observed"
+
+
+class TestEvAnalyzerConsensusWiring:
+    """
+    Smoke tests that ev_analyzer imports apply_consensus_tier and
+    uses its signal_threshold in active mode.
+    """
+
+    def test_ev_analyzer_imports_apply_consensus_tier(self):
+        import ev_analyzer  # noqa: F401
+        assert hasattr(ev_analyzer, "apply_consensus_tier")
+
+    def test_active_mode_tier_2_reduces_threshold(self, monkeypatch):
+        import ev_analyzer
+        monkeypatch.setattr(ev_analyzer, "CONSENSUS_TIER_MODE", "active")
+
+        now = "2026-04-16T23:00:00Z"
+        comparison = {
+            "home_team": "BOS", "away_team": "MIA",
+            "sportsbooks": [
+                {"name": "DK", "last_update": now, "home_moneyline": -140, "away_moneyline": 120},
+                {"name": "FD", "last_update": now, "home_moneyline": -145, "away_moneyline": 125},
+                {"name": "MGM", "last_update": now, "home_moneyline": -135, "away_moneyline": 115},
+                {"name": "Caesars", "last_update": now, "home_moneyline": -150, "away_moneyline": 130},
+            ],
+        }
+        result = ev_analyzer.apply_consensus_tier(
+            comparison=comparison,
+            model_prob_home=0.60,
+            kalshi_yes_mid=0.48,
+            bet_side="home",
+            base_threshold=0.03,
+            mode="active",
+            now_iso=now,
+        )
+        assert result["triangulation_tier"] == 2
+        assert result["signal_threshold"] == pytest.approx(0.03 * 0.7)
