@@ -156,7 +156,7 @@ def compute_divergence(
 
     model_vs_consensus_pp = None
     if model_prob_home is not None and consensus_home is not None:
-        model_vs_consensus_pp = (model_prob_home - consensus_home) * 100.0
+        model_vs_consensus_pp = (consensus_home - model_prob_home) * 100.0
 
     kalshi_vs_model_pp = None
     if kalshi_yes_mid is not None and model_prob_home is not None:
@@ -188,8 +188,10 @@ def _assign_tier(kalshi_vs_consensus_pp, kalshi_vs_model_pp) -> tuple[int, str]:
     if kalshi_vs_consensus_pp is None or kalshi_vs_model_pp is None:
         return 1, "neutral (missing input)"
 
-    big_consensus = abs(kalshi_vs_consensus_pp) >= cutoff
-    big_model = abs(kalshi_vs_model_pp) >= cutoff
+    # Tolerance absorbs IEEE-754 noise so values exactly at the cutoff classify deterministically.
+    eps = 1e-9
+    big_consensus = abs(kalshi_vs_consensus_pp) >= cutoff - eps
+    big_model = abs(kalshi_vs_model_pp) >= cutoff - eps
 
     if not (big_consensus and big_model):
         return 1, f"neutral (|k-c|={abs(kalshi_vs_consensus_pp):.1f}pp, |k-m|={abs(kalshi_vs_model_pp):.1f}pp)"

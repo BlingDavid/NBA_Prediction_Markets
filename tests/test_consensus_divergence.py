@@ -213,7 +213,7 @@ class TestComputeDivergence:
         )
         assert div["triangulation_tier"] == 2
         assert div["kalshi_vs_consensus_pp"] == pytest.approx(10.0, abs=0.01)
-        assert div["model_vs_consensus_pp"] == pytest.approx(2.0, abs=0.01)
+        assert div["model_vs_consensus_pp"] == pytest.approx(-2.0, abs=0.01)
         assert div["kalshi_vs_model_pp"] == pytest.approx(12.0, abs=0.01)
 
     def test_tier_minus_1_model_vs_consensus_opposite(self):
@@ -301,3 +301,58 @@ class TestTierToThresholdMultiplier:
     def test_unknown_tier_falls_back_to_neutral(self):
         # Defensive: an unexpected tier should not crash; behave as tier 1.
         assert tier_to_threshold_multiplier(99, 0.03) == pytest.approx(0.03)
+
+
+import csv
+from pathlib import Path
+
+
+class TestGoldenSnapshot:
+    FIXTURE = Path(__file__).parent / "fixtures" / "consensus_golden_cases.csv"
+
+    def _maybe_float(self, s):
+        return None if s == "" else float(s)
+
+    def _maybe_int(self, s):
+        return None if s == "" else int(s)
+
+    def test_golden_cases_all_match(self):
+        rows = list(csv.DictReader(self.FIXTURE.open()))
+        assert len(rows) >= 20, "Golden fixture should have >= 20 cases"
+
+        failures = []
+        for row in rows:
+            kalshi = self._maybe_float(row["kalshi_yes"])
+            model = self._maybe_float(row["model_prob"])
+            cons_home = self._maybe_float(row["consensus_home"])
+            consensus = (
+                {"home_prob": cons_home, "away_prob": 1 - cons_home,
+                 "n_books": 5, "books_used": []}
+                if cons_home is not None else None
+            )
+
+            result = compute_divergence(kalshi, model, consensus)
+
+            expected_tier = int(row["expected_tier"])
+            if result["triangulation_tier"] != expected_tier:
+                failures.append(
+                    f"{row['case_id']}: tier expected={expected_tier} "
+                    f"got={result['triangulation_tier']} reason={result['tier_reason']}"
+                )
+
+            for csv_key, result_key in (
+                ("expected_kalshi_vs_consensus_pp", "kalshi_vs_consensus_pp"),
+                ("expected_model_vs_consensus_pp",  "model_vs_consensus_pp"),
+                ("expected_kalshi_vs_model_pp",     "kalshi_vs_model_pp"),
+            ):
+                exp = self._maybe_float(row[csv_key])
+                got = result[result_key]
+                if exp is None and got is None:
+                    continue
+                if exp is None or got is None:
+                    failures.append(f"{row['case_id']}: {result_key} expected={exp} got={got}")
+                    continue
+                if abs(exp - got) > 0.01:
+                    failures.append(f"{row['case_id']}: {result_key} expected={exp} got={got}")
+
+        assert not failures, "Golden snapshot mismatches:\n" + "\n".join(failures)
