@@ -186,3 +186,100 @@ class TestParseOddsApiGame:
         }
         result = _parse_odds_api_game(game, self._name_map())
         assert result["books"][0]["last_update"] is None
+
+
+from consensus_divergence import compute_divergence
+
+
+class TestComputeDivergence:
+    """
+    CUTOFF = config.CONSENSUS_DIVERGENCE_THRESHOLD_PP (3.5pp).
+    Tier 2: Kalshi AND model both disagree with consensus by >= CUTOFF,
+            and they disagree in the SAME direction.
+    Tier -1: Kalshi AND consensus disagree with model by >= CUTOFF,
+             pointing in OPPOSITE directions.
+    Tier 1: everything else (including any missing inputs).
+    """
+
+    def _consensus(self, home_prob):
+        return {"home_prob": home_prob, "away_prob": 1 - home_prob,
+                "n_books": 4, "books_used": ["DK", "FD", "MGM", "Caesars"]}
+
+    def test_tier_2_triangulated_same_direction(self):
+        div = compute_divergence(
+            kalshi_yes_mid=0.50,
+            model_prob_home=0.62,
+            consensus=self._consensus(0.60),
+        )
+        assert div["triangulation_tier"] == 2
+        assert div["kalshi_vs_consensus_pp"] == pytest.approx(10.0, abs=0.01)
+        assert div["model_vs_consensus_pp"] == pytest.approx(2.0, abs=0.01)
+        assert div["kalshi_vs_model_pp"] == pytest.approx(12.0, abs=0.01)
+
+    def test_tier_minus_1_model_vs_consensus_opposite(self):
+        div = compute_divergence(
+            kalshi_yes_mid=0.50,
+            model_prob_home=0.44,
+            consensus=self._consensus(0.58),
+        )
+        assert div["triangulation_tier"] == -1
+
+    def test_tier_1_below_cutoff(self):
+        div = compute_divergence(
+            kalshi_yes_mid=0.50,
+            model_prob_home=0.52,
+            consensus=self._consensus(0.51),
+        )
+        assert div["triangulation_tier"] == 1
+
+    def test_tier_boundary_exactly_at_cutoff_is_tier_2(self):
+        div = compute_divergence(
+            kalshi_yes_mid=0.50,
+            model_prob_home=0.535,
+            consensus=self._consensus(0.535),
+        )
+        assert div["triangulation_tier"] == 2
+
+    def test_tier_boundary_just_below_cutoff_is_tier_1(self):
+        div = compute_divergence(
+            kalshi_yes_mid=0.50,
+            model_prob_home=0.534,
+            consensus=self._consensus(0.534),
+        )
+        assert div["triangulation_tier"] == 1
+
+    def test_missing_model_defaults_to_tier_1(self):
+        div = compute_divergence(
+            kalshi_yes_mid=0.50,
+            model_prob_home=None,
+            consensus=self._consensus(0.62),
+        )
+        assert div["triangulation_tier"] == 1
+        assert div["model_vs_consensus_pp"] is None
+        assert div["kalshi_vs_model_pp"] is None
+        assert div["kalshi_vs_consensus_pp"] == pytest.approx(12.0, abs=0.01)
+
+    def test_missing_kalshi_defaults_to_tier_1(self):
+        div = compute_divergence(
+            kalshi_yes_mid=None,
+            model_prob_home=0.62,
+            consensus=self._consensus(0.60),
+        )
+        assert div["triangulation_tier"] == 1
+        assert div["kalshi_vs_consensus_pp"] is None
+        assert div["kalshi_vs_model_pp"] is None
+
+    def test_missing_consensus_defaults_to_tier_1(self):
+        div = compute_divergence(
+            kalshi_yes_mid=0.50,
+            model_prob_home=0.62,
+            consensus=None,
+        )
+        assert div["triangulation_tier"] == 1
+        assert div["kalshi_vs_consensus_pp"] is None
+        assert div["model_vs_consensus_pp"] is None
+
+    def test_tier_reason_is_descriptive(self):
+        div = compute_divergence(0.50, 0.62, self._consensus(0.60))
+        assert isinstance(div["tier_reason"], str)
+        assert len(div["tier_reason"]) > 0

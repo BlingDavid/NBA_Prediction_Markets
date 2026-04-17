@@ -18,7 +18,7 @@ from __future__ import annotations
 from statistics import median
 from datetime import datetime, timezone
 
-from config import CONSENSUS_MIN_BOOKS, CONSENSUS_STALE_SECONDS
+from config import CONSENSUS_MIN_BOOKS, CONSENSUS_STALE_SECONDS, CONSENSUS_DIVERGENCE_THRESHOLD_PP
 
 
 def _american_to_raw_prob(moneyline) -> float | None:
@@ -135,3 +135,72 @@ def consensus_implied_prob(
         "n_books": len(books_used),
         "books_used": books_used,
     }
+
+
+def compute_divergence(
+    kalshi_yes_mid,
+    model_prob_home,
+    consensus,
+) -> dict:
+    """
+    Compute Kalshi-vs-consensus, model-vs-consensus, and kalshi-vs-model
+    divergences (in percentage points) and assign a triangulation tier.
+
+    All inputs may be None; missing inputs yield None divergences and tier=1.
+    """
+    consensus_home = consensus["home_prob"] if consensus else None
+
+    kalshi_vs_consensus_pp = None
+    if kalshi_yes_mid is not None and consensus_home is not None:
+        kalshi_vs_consensus_pp = (consensus_home - kalshi_yes_mid) * 100.0
+
+    model_vs_consensus_pp = None
+    if model_prob_home is not None and consensus_home is not None:
+        model_vs_consensus_pp = (model_prob_home - consensus_home) * 100.0
+
+    kalshi_vs_model_pp = None
+    if kalshi_yes_mid is not None and model_prob_home is not None:
+        kalshi_vs_model_pp = (model_prob_home - kalshi_yes_mid) * 100.0
+
+    tier, tier_reason = _assign_tier(
+        kalshi_vs_consensus_pp,
+        kalshi_vs_model_pp,
+    )
+
+    return {
+        "kalshi_vs_consensus_pp": (
+            round(kalshi_vs_consensus_pp, 4) if kalshi_vs_consensus_pp is not None else None
+        ),
+        "model_vs_consensus_pp": (
+            round(model_vs_consensus_pp, 4) if model_vs_consensus_pp is not None else None
+        ),
+        "kalshi_vs_model_pp": (
+            round(kalshi_vs_model_pp, 4) if kalshi_vs_model_pp is not None else None
+        ),
+        "triangulation_tier": tier,
+        "tier_reason": tier_reason,
+    }
+
+
+def _assign_tier(kalshi_vs_consensus_pp, kalshi_vs_model_pp) -> tuple[int, str]:
+    cutoff = CONSENSUS_DIVERGENCE_THRESHOLD_PP
+
+    if kalshi_vs_consensus_pp is None or kalshi_vs_model_pp is None:
+        return 1, "neutral (missing input)"
+
+    big_consensus = abs(kalshi_vs_consensus_pp) >= cutoff
+    big_model = abs(kalshi_vs_model_pp) >= cutoff
+
+    if not (big_consensus and big_model):
+        return 1, f"neutral (|k-c|={abs(kalshi_vs_consensus_pp):.1f}pp, |k-m|={abs(kalshi_vs_model_pp):.1f}pp)"
+
+    same_direction = (kalshi_vs_consensus_pp * kalshi_vs_model_pp) > 0
+    if same_direction:
+        return 2, (
+            f"triangulated: both consensus ({kalshi_vs_consensus_pp:+.1f}pp) and "
+            f"model ({kalshi_vs_model_pp:+.1f}pp) disagree with Kalshi in the same direction"
+        )
+    return -1, (
+        f"contradicting: consensus says {kalshi_vs_consensus_pp:+.1f}pp and "
+        f"model says {kalshi_vs_model_pp:+.1f}pp — they point opposite ways"
+    )
