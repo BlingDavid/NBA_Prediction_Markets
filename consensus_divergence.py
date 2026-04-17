@@ -15,6 +15,11 @@ and pass it in. See docs/superpowers/specs/2026-04-16-arbitrage-detection-design
 
 from __future__ import annotations
 
+from statistics import median
+from datetime import datetime, timezone
+
+from config import CONSENSUS_MIN_BOOKS, CONSENSUS_STALE_SECONDS
+
 
 def _american_to_raw_prob(moneyline) -> float | None:
     """American moneyline → raw implied probability (with vig)."""
@@ -44,3 +49,89 @@ def devig_proportional(home_ml, away_ml) -> tuple[float, float] | None:
     if total <= 0:
         return None
     return p_home_raw / total, p_away_raw / total
+
+
+def _parse_iso_utc_seconds(iso_str):
+    """ISO-8601 string → POSIX seconds (UTC). Returns None on failure."""
+    if not iso_str:
+        return None
+    try:
+        # Accept both 'Z' and '+00:00' suffixes
+        normalized = iso_str.replace("Z", "+00:00") if isinstance(iso_str, str) else iso_str
+        return datetime.fromisoformat(normalized).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_fresh(last_update_iso, now_iso, stale_seconds) -> bool:
+    """True if the quote is fresh enough OR if we cannot determine its age
+    (missing timestamps must not silently discard the whole consensus)."""
+    if last_update_iso is None:
+        return True
+    quote_ts = _parse_iso_utc_seconds(last_update_iso)
+    now_ts = _parse_iso_utc_seconds(now_iso)
+    if quote_ts is None or now_ts is None:
+        return True
+    return (now_ts - quote_ts) <= stale_seconds
+
+
+def consensus_implied_prob(
+    sportsbooks,
+    now_iso=None,
+    stale_seconds: int = CONSENSUS_STALE_SECONDS,
+    min_books: int = CONSENSUS_MIN_BOOKS,
+) -> dict | None:
+    """
+    Build a de-vigged consensus probability across sportsbooks.
+
+    sportsbooks: list of dicts with keys:
+        name (str), last_update (ISO-8601 str or None),
+        home_moneyline (int | None), away_moneyline (int | None).
+
+    now_iso: reference "now" for staleness. None → uses datetime.utcnow() ISO.
+
+    Returns {home_prob, away_prob, n_books, books_used} or None when fewer
+    than `min_books` non-stale, well-formed books remain.
+    """
+    if not sportsbooks:
+        return None
+
+    if now_iso is None:
+        now_iso = datetime.now(tz=timezone.utc).isoformat()
+
+    home_probs: list[float] = []
+    away_probs: list[float] = []
+    books_used: list[str] = []
+
+    for book in sportsbooks:
+        if not _is_fresh(book.get("last_update"), now_iso, stale_seconds):
+            continue
+        devigged = devig_proportional(
+            book.get("home_moneyline"),
+            book.get("away_moneyline"),
+        )
+        if devigged is None:
+            continue
+        home_probs.append(devigged[0])
+        away_probs.append(devigged[1])
+        books_used.append(book.get("name", ""))
+
+    if len(home_probs) < min_books:
+        return None
+
+    home_prob = median(home_probs)
+    away_prob = median(away_probs)
+
+    # Clamp and re-normalize so the pair sums exactly to 1.
+    home_prob = min(max(home_prob, 0.01), 0.99)
+    away_prob = min(max(away_prob, 0.01), 0.99)
+    total = home_prob + away_prob
+    home_prob /= total
+    away_prob /= total
+
+    return {
+        "home_prob": round(home_prob, 6),
+        "away_prob": round(away_prob, 6),
+        "n_books": len(books_used),
+        "books_used": books_used,
+    }

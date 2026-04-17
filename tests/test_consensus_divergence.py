@@ -36,6 +36,95 @@ class TestDevigProportional:
         assert devig_proportional(-110, "") is None
 
 
+from consensus_divergence import consensus_implied_prob
+
+
+def _book(name, home_ml, away_ml, last_update="2026-04-16T22:55:00Z"):
+    """Shape-compatible with live_data._parse_odds_api_game output."""
+    return {
+        "name": name,
+        "last_update": last_update,
+        "home_moneyline": home_ml,
+        "away_moneyline": away_ml,
+    }
+
+
+class TestConsensusImpliedProb:
+    NOW = "2026-04-16T23:00:00Z"  # reference "current time" for staleness
+
+    def test_five_fresh_books_uses_median(self):
+        books = [
+            _book("DK", -140, 120),
+            _book("FD", -145, 125),
+            _book("MGM", -135, 115),
+            _book("Caesars", -150, 130),
+            _book("PointsBet", -138, 118),
+        ]
+        result = consensus_implied_prob(books, now_iso=self.NOW)
+        assert result is not None
+        assert result["n_books"] == 5
+        assert len(result["books_used"]) == 5
+        assert 0.55 < result["home_prob"] < 0.60
+        assert result["home_prob"] + result["away_prob"] == pytest.approx(1.0, abs=1e-9)
+
+    def test_drops_stale_quotes(self):
+        books = [
+            _book("DK", -140, 120),
+            _book("FD", -145, 125),
+            _book("MGM", -135, 115),
+            _book("Caesars", -150, 130, last_update="2026-04-16T22:30:00Z"),
+            _book("PointsBet", -138, 118, last_update="2026-04-16T22:40:00Z"),
+        ]
+        result = consensus_implied_prob(books, now_iso=self.NOW)
+        assert result is not None
+        assert result["n_books"] == 3
+        assert "Caesars" not in result["books_used"]
+        assert "PointsBet" not in result["books_used"]
+
+    def test_below_min_books_returns_none(self):
+        books = [
+            _book("DK", -140, 120),
+            _book("FD", -145, 125, last_update="2026-04-16T22:30:00Z"),
+            _book("MGM", -135, 115, last_update="2026-04-16T22:30:00Z"),
+        ]
+        result = consensus_implied_prob(books, now_iso=self.NOW)
+        assert result is None
+
+    def test_all_malformed_returns_none(self):
+        books = [
+            _book("DK", None, 120),
+            _book("FD", -145, 0),
+            _book("MGM", "", 115),
+        ]
+        result = consensus_implied_prob(books, now_iso=self.NOW)
+        assert result is None
+
+    def test_clamps_extreme_probabilities(self):
+        books = [
+            _book("DK", -2000, 1000),
+            _book("FD", -2200, 1100),
+            _book("MGM", -1800, 900),
+        ]
+        result = consensus_implied_prob(books, now_iso=self.NOW)
+        assert result is not None
+        assert result["home_prob"] <= 0.99
+        assert result["away_prob"] >= 0.01
+        assert result["home_prob"] + result["away_prob"] == pytest.approx(1.0, abs=1e-9)
+
+    def test_empty_book_list(self):
+        assert consensus_implied_prob([], now_iso=self.NOW) is None
+
+    def test_missing_last_update_is_considered_fresh(self):
+        books = [
+            _book("DK", -140, 120, last_update=None),
+            _book("FD", -145, 125, last_update=None),
+            _book("MGM", -135, 115, last_update=None),
+        ]
+        result = consensus_implied_prob(books, now_iso=self.NOW)
+        assert result is not None
+        assert result["n_books"] == 3
+
+
 from live_data import _parse_odds_api_game
 
 
