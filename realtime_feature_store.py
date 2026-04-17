@@ -33,7 +33,7 @@ from config import (
     LIVE_MARKETS_DIR,
     LIVE_STATE_DIR,
 )
-from consensus_divergence import consensus_implied_prob
+from consensus_divergence import compute_divergence, consensus_implied_prob
 from live_data import fetch_odds_api_lines
 from market_scanner import KalshiClient
 from nba_market_utils import normalize_nba_abbrev, parse_nba_ticker
@@ -681,6 +681,20 @@ class LiveFeatureStore:
             consensus_candidates = [value for value in consensus_candidates if value is not None]
             consensus_home = round(float(np.mean(consensus_candidates)), 4) if consensus_candidates else None
 
+            # Divergence signal (IMPROVEMENTS #8)
+            consensus_for_div = (
+                {"home_prob": consensus.get("home_prob"),
+                 "away_prob": consensus.get("away_prob"),
+                 "n_books": consensus.get("n_books", 0)}
+                if consensus and consensus.get("home_prob") is not None
+                else None
+            )
+            div = compute_divergence(
+                kalshi_yes_mid=market_home_implied,
+                model_prob_home=pregame.get("home_win_prob"),
+                consensus=consensus_for_div,
+            )
+
             feature_row = {
                 "captured_at": market_row.get("captured_at"),
                 "ticker": market_row.get("ticker"),
@@ -729,6 +743,11 @@ class LiveFeatureStore:
                 "pregame_spread": pregame.get("predicted_spread"),
                 "pregame_total": pregame.get("predicted_total"),
                 "pregame_data_date": pregame.get("data_date"),
+                "kalshi_vs_consensus_pp": div["kalshi_vs_consensus_pp"],
+                "model_vs_consensus_pp": div["model_vs_consensus_pp"],
+                "kalshi_vs_model_pp": div["kalshi_vs_model_pp"],
+                "triangulation_tier": div["triangulation_tier"],
+                "consensus_n_books": consensus.get("n_books", 0) if consensus else 0,
             }
 
             if feature_row["pregame_home_win_prob"] is not None and market_home_implied is not None:
