@@ -18,7 +18,7 @@ from __future__ import annotations
 from statistics import median
 from datetime import datetime, timezone
 
-from config import CONSENSUS_MIN_BOOKS, CONSENSUS_STALE_SECONDS, CONSENSUS_DIVERGENCE_THRESHOLD_PP
+from config import CONSENSUS_MIN_BOOKS, CONSENSUS_STALE_SECONDS, CONSENSUS_DIVERGENCE_THRESHOLD_PP, TIER_THRESHOLD_MULTIPLIERS
 
 
 def _american_to_raw_prob(moneyline) -> float | None:
@@ -204,3 +204,14 @@ def _assign_tier(kalshi_vs_consensus_pp, kalshi_vs_model_pp) -> tuple[int, str]:
         f"contradicting: consensus says {kalshi_vs_consensus_pp:+.1f}pp and "
         f"model says {kalshi_vs_model_pp:+.1f}pp — they point opposite ways"
     )
+
+
+def tier_to_threshold_multiplier(tier: int, base_threshold: float) -> float:
+    """
+    Map a triangulation tier to an adjusted edge threshold.
+
+    Multipliers are read from config.TIER_THRESHOLD_MULTIPLIERS so they
+    can be tuned without code changes. Unknown tiers fall back to 1.0.
+    """
+    multiplier = TIER_THRESHOLD_MULTIPLIERS.get(tier, 1.0)
+    return base_threshold * multiplier

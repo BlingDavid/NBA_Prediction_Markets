@@ -283,3 +283,21 @@ class TestComputeDivergence:
         div = compute_divergence(0.50, 0.62, self._consensus(0.60))
         assert isinstance(div["tier_reason"], str)
         assert len(div["tier_reason"]) > 0
+
+
+from consensus_divergence import tier_to_threshold_multiplier
+
+
+class TestTierToThresholdMultiplier:
+    def test_tier_2_lowers_threshold(self):
+        assert tier_to_threshold_multiplier(2, 0.03) == pytest.approx(0.021)
+
+    def test_tier_1_unchanged(self):
+        assert tier_to_threshold_multiplier(1, 0.03) == pytest.approx(0.03)
+
+    def test_tier_minus_1_raises_threshold(self):
+        assert tier_to_threshold_multiplier(-1, 0.03) == pytest.approx(0.045)
+
+    def test_unknown_tier_falls_back_to_neutral(self):
+        # Defensive: an unexpected tier should not crash; behave as tier 1.
+        assert tier_to_threshold_multiplier(99, 0.03) == pytest.approx(0.03)
