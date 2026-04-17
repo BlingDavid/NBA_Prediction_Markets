@@ -356,3 +356,94 @@ class TestGoldenSnapshot:
                     failures.append(f"{row['case_id']}: {result_key} expected={exp} got={got}")
 
         assert not failures, "Golden snapshot mismatches:\n" + "\n".join(failures)
+
+
+from consensus_divergence import apply_consensus_tier
+
+
+class TestApplyConsensusTier:
+    NOW = "2026-04-16T23:00:00Z"
+
+    def _comparison(self, books):
+        return {"home_team": "BOS", "away_team": "MIA", "sportsbooks": books}
+
+    def _good_books(self):
+        return [
+            {"name": "DK", "last_update": self.NOW, "home_moneyline": -140, "away_moneyline": 120},
+            {"name": "FD", "last_update": self.NOW, "home_moneyline": -145, "away_moneyline": 125},
+            {"name": "MGM", "last_update": self.NOW, "home_moneyline": -135, "away_moneyline": 115},
+            {"name": "Caesars", "last_update": self.NOW, "home_moneyline": -150, "away_moneyline": 130},
+        ]
+
+    def test_shadow_mode_does_not_adjust_threshold(self):
+        result = apply_consensus_tier(
+            comparison=self._comparison(self._good_books()),
+            model_prob_home=0.60,
+            kalshi_yes_mid=0.48,
+            bet_side="home",
+            base_threshold=0.03,
+            mode="shadow",
+            now_iso=self.NOW,
+        )
+        assert result["signal_threshold"] == pytest.approx(0.03)
+        assert result["shadow_signal_threshold"] != result["signal_threshold"]
+        assert result["shadow_signal_threshold"] == pytest.approx(0.03 * 0.7)
+        assert result["triangulation_tier"] == 2
+        assert result["mode"] == "shadow"
+
+    def test_active_mode_applies_multiplier(self):
+        result = apply_consensus_tier(
+            comparison=self._comparison(self._good_books()),
+            model_prob_home=0.60,
+            kalshi_yes_mid=0.48,
+            bet_side="home",
+            base_threshold=0.03,
+            mode="active",
+            now_iso=self.NOW,
+        )
+        assert result["signal_threshold"] == pytest.approx(0.03 * 0.7)
+        assert result["triangulation_tier"] == 2
+
+    def test_off_mode_pins_tier_one(self):
+        result = apply_consensus_tier(
+            comparison=self._comparison(self._good_books()),
+            model_prob_home=0.60,
+            kalshi_yes_mid=0.48,
+            bet_side="home",
+            base_threshold=0.03,
+            mode="off",
+            now_iso=self.NOW,
+        )
+        assert result["triangulation_tier"] == 1
+        assert result["signal_threshold"] == pytest.approx(0.03)
+
+    def test_away_bet_side_inverts_kalshi_yes_mid(self):
+        # On an "away YES" ticker, yes_mid=0.48 means the market thinks AWAY wins 48%,
+        # so home wins 52%. Divergence against consensus should use 0.52.
+        # model 0.54 vs kalshi_home 0.52 → |k-m|=2pp (<cutoff) → tier 1.
+        # Same books with home bet_side (kalshi_home=0.48) would land in tier 2,
+        # so this case confirms the inversion flips the tier.
+        result = apply_consensus_tier(
+            comparison=self._comparison(self._good_books()),
+            model_prob_home=0.54,
+            kalshi_yes_mid=0.48,
+            bet_side="away",
+            base_threshold=0.03,
+            mode="active",
+            now_iso=self.NOW,
+        )
+        assert result["triangulation_tier"] == 1
+
+    def test_missing_sportsbooks_yields_tier_one(self):
+        result = apply_consensus_tier(
+            comparison={"home_team": "BOS", "away_team": "MIA", "sportsbooks": []},
+            model_prob_home=0.60,
+            kalshi_yes_mid=0.48,
+            bet_side="home",
+            base_threshold=0.03,
+            mode="active",
+            now_iso=self.NOW,
+        )
+        assert result["triangulation_tier"] == 1
+        assert result["consensus_n_books"] == 0
+        assert result["signal_threshold"] == pytest.approx(0.03)

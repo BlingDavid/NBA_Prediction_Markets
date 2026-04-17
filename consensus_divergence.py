@@ -217,3 +217,75 @@ def tier_to_threshold_multiplier(tier: int, base_threshold: float) -> float:
     """
     multiplier = TIER_THRESHOLD_MULTIPLIERS.get(tier, 1.0)
     return base_threshold * multiplier
+
+
+def apply_consensus_tier(
+    comparison: dict,
+    model_prob_home: float | None,
+    kalshi_yes_mid: float | None,
+    bet_side: str,
+    base_threshold: float,
+    mode: str = "shadow",
+    now_iso: str | None = None,
+) -> dict:
+    """
+    Single entry point for ev_analyzer.
+
+    Converts kalshi_yes_mid to a home-side probability (if bet_side='away',
+    the YES side represents away winning, so home_prob = 1 - yes_mid),
+    computes consensus, divergences, and tier, then emits an adjusted
+    threshold gated by `mode`:
+
+        shadow  → signal_threshold = base_threshold (unchanged);
+                  shadow_signal_threshold = what it WOULD be in active.
+        active  → signal_threshold = base_threshold * TIER_THRESHOLD_MULTIPLIERS[tier].
+        off     → tier forced to 1; signal_threshold = base_threshold.
+
+    Returns a dict the caller can log directly.
+    """
+    kalshi_home_prob = None
+    if kalshi_yes_mid is not None:
+        kalshi_home_prob = kalshi_yes_mid if bet_side == "home" else (1.0 - kalshi_yes_mid)
+
+    books = comparison.get("sportsbooks", []) if comparison else []
+    books_input = [
+        {
+            "name": b.get("name", ""),
+            "last_update": b.get("last_update"),
+            "home_moneyline": b.get("home_moneyline"),
+            "away_moneyline": b.get("away_moneyline"),
+        }
+        for b in books
+    ]
+    consensus = consensus_implied_prob(books_input, now_iso=now_iso)
+    div = compute_divergence(kalshi_home_prob, model_prob_home, consensus)
+
+    tier = div["triangulation_tier"]
+    if mode == "off":
+        tier = 1
+    elif mode not in ("shadow", "active"):
+        # Defensive default: any unknown mode behaves like "off" (safer than "active").
+        tier = 1
+
+    shadow_signal_threshold = tier_to_threshold_multiplier(
+        div["triangulation_tier"], base_threshold
+    )
+
+    if mode == "active":
+        signal_threshold = tier_to_threshold_multiplier(tier, base_threshold)
+    else:
+        signal_threshold = base_threshold
+
+    return {
+        "mode": mode,
+        "triangulation_tier": tier,
+        "tier_reason": div["tier_reason"],
+        "kalshi_vs_consensus_pp": div["kalshi_vs_consensus_pp"],
+        "model_vs_consensus_pp": div["model_vs_consensus_pp"],
+        "kalshi_vs_model_pp": div["kalshi_vs_model_pp"],
+        "consensus_home_prob": consensus["home_prob"] if consensus else None,
+        "consensus_n_books": consensus["n_books"] if consensus else 0,
+        "signal_threshold": signal_threshold,
+        "shadow_signal_threshold": shadow_signal_threshold,
+        "base_threshold": base_threshold,
+    }
