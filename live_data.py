@@ -587,6 +587,7 @@ def fetch_odds_api_lines(home_team: str = None, away_team: str = None) -> list[d
         }, timeout=10)
 
         if resp.status_code != 200:
+            print(f"    Odds API: HTTP {resp.status_code} ({resp.text[:120]})")
             return []
 
         data = resp.json()
