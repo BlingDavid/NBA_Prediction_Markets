@@ -410,3 +410,102 @@ def _cli_settle(args):
         settled_at=args.settled_at,
     )
     print(f"Updated {n} row(s) for game_id={args.game_id} in {path}")
+
+
+def format_scan_table(rows) -> str:
+    if not rows:
+        return "No divergences to report.\n"
+
+    # Sort by absolute Kalshi-vs-consensus divergence, desc
+    sorted_rows = sorted(
+        rows,
+        key=lambda r: abs(r.get("kalshi_vs_consensus_pp") or 0.0),
+        reverse=True,
+    )
+    lines = [
+        f"{'Matchup':<16}{'Kalshi':>10}{'Consensus':>12}{'Δ(pp)':>10}{'Tier':>6}{'Books':>8}",
+        "-" * 62,
+    ]
+    for r in sorted_rows:
+        lines.append(
+            f"{r.get('matchup', ''):<16}"
+            f"{(r.get('kalshi_yes') or 0.0):>10.3f}"
+            f"{(r.get('consensus_home') or 0.0):>12.3f}"
+            f"{(r.get('kalshi_vs_consensus_pp') or 0.0):>+10.2f}"
+            f"{r.get('tier', 0):>+6d}"
+            f"{r.get('n_books', 0):>8d}"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def _cli_scan(args):
+    from live_data import fetch_odds_api_lines, fetch_espn_odds
+    from config import OUTPUTS_DIR
+
+    games = fetch_odds_api_lines()
+    espn_games = {(g.get("home", ""), g.get("away", "")): g for g in fetch_espn_odds()}
+
+    rows = []
+    for game in games:
+        books = [
+            {
+                "name": b.get("name", ""),
+                "last_update": b.get("last_update"),
+                "home_moneyline": b.get("markets", {}).get("h2h", {}).get(game["home"], {}).get("price"),
+                "away_moneyline": b.get("markets", {}).get("h2h", {}).get(game["away"], {}).get("price"),
+            }
+            for b in game.get("books", [])
+        ]
+        consensus = consensus_implied_prob(books)
+        if consensus is None:
+            continue
+
+        espn = espn_games.get((game["home"], game["away"]))
+        kalshi_proxy = espn.get("home_implied_prob") if espn else None
+
+        div = compute_divergence(
+            kalshi_yes_mid=kalshi_proxy,
+            model_prob_home=None,
+            consensus=consensus,
+        )
+        rows.append({
+            "matchup": f"{game['away']}@{game['home']}",
+            "kalshi_yes": kalshi_proxy,
+            "consensus_home": consensus["home_prob"],
+            "kalshi_vs_consensus_pp": div["kalshi_vs_consensus_pp"],
+            "n_books": consensus["n_books"],
+            "tier": div["triangulation_tier"],
+        })
+
+    table = format_scan_table(rows)
+    print(table)
+
+    if not args.dry_run:
+        out_path = OUTPUTS_DIR / f"consensus_scan_{datetime.now(tz=timezone.utc).strftime('%Y%m%d_%H%M%S')}.txt"
+        out_path.write_text(table)
+        print(f"Scan written to {out_path}")
+
+
+def main():
+    import argparse as _argparse
+    parser = _argparse.ArgumentParser(description="Consensus divergence CLI (IMPROVEMENTS #8).")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    scan = sub.add_parser("scan", help="Print consensus divergences for today's games.")
+    scan.add_argument("--dry-run", action="store_true", help="Do not write output file.")
+
+    settle = sub.add_parser("settle", help="Fill in pnl/settled_at for a logged game decision.")
+    settle.add_argument("--game-id", required=True)
+    settle.add_argument("--home-win", required=True, help="true|false")
+    settle.add_argument("--pnl", required=True)
+    settle.add_argument("--settled-at", required=True, help="ISO-8601 timestamp")
+
+    args = parser.parse_args()
+    if args.command == "scan":
+        _cli_scan(args)
+    elif args.command == "settle":
+        _cli_settle(args)
+
+
+if __name__ == "__main__":
+    main()

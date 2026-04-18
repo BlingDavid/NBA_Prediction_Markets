@@ -554,3 +554,28 @@ class TestUpdateDivergenceOutcome:
             settled_at="2026-04-17T03:30:00Z",
         )
         assert n == 0
+
+
+class TestFormatScanTable:
+    def test_formatter_renders_rows_sorted_by_divergence_magnitude(self):
+        from consensus_divergence import format_scan_table
+
+        rows = [
+            {"matchup": "BOS@MIA", "kalshi_yes": 0.48, "consensus_home": 0.60,
+             "kalshi_vs_consensus_pp": 12.0, "n_books": 4, "tier": 2},
+            {"matchup": "LAL@DEN", "kalshi_yes": 0.51, "consensus_home": 0.52,
+             "kalshi_vs_consensus_pp": 1.0, "n_books": 5, "tier": 1},
+            {"matchup": "OKC@GSW", "kalshi_yes": 0.70, "consensus_home": 0.58,
+             "kalshi_vs_consensus_pp": -12.0, "n_books": 3, "tier": 2},
+        ]
+        table = format_scan_table(rows)
+        # Tier-2 rows (highest |divergence|) should appear before tier-1
+        assert table.index("BOS@MIA") < table.index("LAL@DEN")
+        assert table.index("OKC@GSW") < table.index("LAL@DEN")
+        assert "BOS@MIA" in table
+        assert "LAL@DEN" in table
+        assert "OKC@GSW" in table
+
+    def test_formatter_handles_empty_list(self):
+        from consensus_divergence import format_scan_table
+        assert format_scan_table([]) == "No divergences to report.\n"
