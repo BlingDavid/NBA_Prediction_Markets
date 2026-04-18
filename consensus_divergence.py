@@ -359,3 +359,54 @@ def record_divergence_decision(
             "pnl": "",
             "home_win": "",
         })
+
+
+def update_divergence_outcome(
+    metrics_path,
+    game_id: str,
+    home_win: bool,
+    pnl: float,
+    settled_at: str,
+) -> int:
+    """
+    Find rows in the metrics CSV matching `game_id` and fill in their
+    pnl, settled_at, home_win fields. Returns the number of rows updated.
+
+    Rewrites the CSV in place (small file; no scale concerns for v1).
+    """
+    path = _Path(metrics_path)
+    if not path.exists():
+        return 0
+
+    with path.open() as f:
+        reader = _csv.DictReader(f)
+        rows = list(reader)
+
+    updated = 0
+    for row in rows:
+        if row.get("game_id") == game_id:
+            row["pnl"] = str(pnl)
+            row["settled_at"] = settled_at
+            row["home_win"] = str(home_win)
+            updated += 1
+
+    if updated > 0:
+        with path.open("w", newline="") as f:
+            writer = _csv.DictWriter(f, fieldnames=METRICS_COLUMNS)
+            writer.writeheader()
+            writer.writerows(rows)
+
+    return updated
+
+
+def _cli_settle(args):
+    from config import OUTPUTS_DIR
+    path = OUTPUTS_DIR / "consensus_divergence_metrics.csv"
+    n = update_divergence_outcome(
+        metrics_path=path,
+        game_id=args.game_id,
+        home_win=(args.home_win.lower() == "true"),
+        pnl=float(args.pnl),
+        settled_at=args.settled_at,
+    )
+    print(f"Updated {n} row(s) for game_id={args.game_id} in {path}")

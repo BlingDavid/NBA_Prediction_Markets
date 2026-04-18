@@ -499,3 +499,58 @@ class TestRecordDivergenceDecision:
         lines = metrics_path.read_text().splitlines()
         # 1 header + 3 data rows
         assert len(lines) == 4
+
+
+class TestUpdateDivergenceOutcome:
+    def _seed(self, tmp_path, game_id="GAME_A"):
+        from consensus_divergence import record_divergence_decision
+        metrics_path = tmp_path / "consensus_divergence_metrics.csv"
+        record_divergence_decision(
+            metrics_path=metrics_path,
+            game_id=game_id,
+            decided_at="2026-04-16T22:00:00Z",
+            mode="shadow",
+            tier=2,
+            kalshi_vs_consensus_pp=12.0,
+            model_vs_consensus_pp=-2.0,
+            kalshi_vs_model_pp=14.0,
+            bet_taken=True,
+            stake=100.0,
+            base_threshold=0.03,
+            adjusted_threshold=0.021,
+            would_have_bet_at_base=True,
+            would_have_bet_at_adjusted=True,
+        )
+        return metrics_path
+
+    def test_updates_pnl_and_settled_at(self, tmp_path):
+        from consensus_divergence import update_divergence_outcome
+
+        path = self._seed(tmp_path)
+        n = update_divergence_outcome(
+            metrics_path=path,
+            game_id="GAME_A",
+            home_win=True,
+            pnl=57.0,
+            settled_at="2026-04-17T03:30:00Z",
+        )
+        assert n == 1
+
+        import csv
+        rows = list(csv.DictReader(path.open()))
+        assert rows[0]["pnl"] == "57.0"
+        assert rows[0]["settled_at"] == "2026-04-17T03:30:00Z"
+        assert rows[0]["home_win"] == "True"
+
+    def test_returns_zero_when_game_not_found(self, tmp_path):
+        from consensus_divergence import update_divergence_outcome
+
+        path = self._seed(tmp_path)
+        n = update_divergence_outcome(
+            metrics_path=path,
+            game_id="UNKNOWN",
+            home_win=True,
+            pnl=0.0,
+            settled_at="2026-04-17T03:30:00Z",
+        )
+        assert n == 0
