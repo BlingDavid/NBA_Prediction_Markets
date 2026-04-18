@@ -447,3 +447,55 @@ class TestApplyConsensusTier:
         assert result["triangulation_tier"] == 1
         assert result["consensus_n_books"] == 0
         assert result["signal_threshold"] == pytest.approx(0.03)
+
+
+class TestRecordDivergenceDecision:
+    def test_creates_file_with_header_on_first_call(self, tmp_path):
+        from consensus_divergence import record_divergence_decision
+
+        metrics_path = tmp_path / "consensus_divergence_metrics.csv"
+        record_divergence_decision(
+            metrics_path=metrics_path,
+            game_id="GAME_2026-04-16_BOS_MIA",
+            decided_at="2026-04-16T22:00:00Z",
+            mode="shadow",
+            tier=2,
+            kalshi_vs_consensus_pp=12.0,
+            model_vs_consensus_pp=-2.0,
+            kalshi_vs_model_pp=14.0,
+            bet_taken=True,
+            stake=100.0,
+            base_threshold=0.03,
+            adjusted_threshold=0.021,
+            would_have_bet_at_base=True,
+            would_have_bet_at_adjusted=True,
+        )
+        assert metrics_path.exists()
+        content = metrics_path.read_text()
+        assert "game_id,decided_at,settled_at,mode,tier" in content.splitlines()[0]
+        assert "GAME_2026-04-16_BOS_MIA" in content
+
+    def test_appends_to_existing_file(self, tmp_path):
+        from consensus_divergence import record_divergence_decision
+
+        metrics_path = tmp_path / "consensus_divergence_metrics.csv"
+        for game_id in ["A", "B", "C"]:
+            record_divergence_decision(
+                metrics_path=metrics_path,
+                game_id=game_id,
+                decided_at="2026-04-16T22:00:00Z",
+                mode="shadow",
+                tier=1,
+                kalshi_vs_consensus_pp=1.0,
+                model_vs_consensus_pp=0.5,
+                kalshi_vs_model_pp=1.5,
+                bet_taken=False,
+                stake=0.0,
+                base_threshold=0.03,
+                adjusted_threshold=0.03,
+                would_have_bet_at_base=False,
+                would_have_bet_at_adjusted=False,
+            )
+        lines = metrics_path.read_text().splitlines()
+        # 1 header + 3 data rows
+        assert len(lines) == 4

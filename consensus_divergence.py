@@ -289,3 +289,73 @@ def apply_consensus_tier(
         "shadow_signal_threshold": shadow_signal_threshold,
         "base_threshold": base_threshold,
     }
+
+
+import csv as _csv
+from pathlib import Path as _Path
+
+METRICS_COLUMNS = [
+    "game_id",
+    "decided_at",
+    "settled_at",
+    "mode",
+    "tier",
+    "kalshi_vs_consensus_pp",
+    "model_vs_consensus_pp",
+    "kalshi_vs_model_pp",
+    "base_threshold",
+    "adjusted_threshold",
+    "bet_taken",
+    "stake",
+    "would_have_bet_at_base",
+    "would_have_bet_at_adjusted",
+    "pnl",
+    "home_win",
+]
+
+
+def record_divergence_decision(
+    metrics_path,
+    game_id: str,
+    decided_at: str,
+    mode: str,
+    tier: int,
+    kalshi_vs_consensus_pp,
+    model_vs_consensus_pp,
+    kalshi_vs_model_pp,
+    bet_taken: bool,
+    stake: float,
+    base_threshold: float,
+    adjusted_threshold: float,
+    would_have_bet_at_base: bool,
+    would_have_bet_at_adjusted: bool,
+) -> None:
+    """
+    Append a decision-time row to the metrics CSV. pnl, settled_at, home_win
+    columns are left blank and filled in later by update_divergence_outcome.
+    """
+    path = _Path(metrics_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    is_new = not path.exists()
+    with path.open("a", newline="") as f:
+        writer = _csv.DictWriter(f, fieldnames=METRICS_COLUMNS)
+        if is_new:
+            writer.writeheader()
+        writer.writerow({
+            "game_id": game_id,
+            "decided_at": decided_at,
+            "settled_at": "",
+            "mode": mode,
+            "tier": tier,
+            "kalshi_vs_consensus_pp": kalshi_vs_consensus_pp if kalshi_vs_consensus_pp is not None else "",
+            "model_vs_consensus_pp": model_vs_consensus_pp if model_vs_consensus_pp is not None else "",
+            "kalshi_vs_model_pp": kalshi_vs_model_pp if kalshi_vs_model_pp is not None else "",
+            "base_threshold": base_threshold,
+            "adjusted_threshold": adjusted_threshold,
+            "bet_taken": bet_taken,
+            "stake": stake,
+            "would_have_bet_at_base": would_have_bet_at_base,
+            "would_have_bet_at_adjusted": would_have_bet_at_adjusted,
+            "pnl": "",
+            "home_win": "",
+        })

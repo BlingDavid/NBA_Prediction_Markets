@@ -26,6 +26,7 @@ What it does:
 
 import argparse
 import sys
+from datetime import datetime, timezone
 
 import numpy as np
 import pandas as pd
@@ -39,7 +40,7 @@ from config import (
     OUTPUTS_DIR,
     TEAM_ABBREV_MAP,
 )
-from consensus_divergence import apply_consensus_tier
+from consensus_divergence import apply_consensus_tier, record_divergence_decision
 from market_scanner import KalshiClient
 from nba_market_utils import parse_nba_ticker
 from prediction_utils import get_model_prediction
@@ -414,6 +415,7 @@ def analyze_market(
             print(f"    Edge threshold:  (unavailable: {e})")
 
         # Consensus-divergence signal (#8): adjust threshold based on Kalshi↔consensus↔model tier.
+        tier_result = None
         try:
             comparison = get_odds_comparison(home, away)
             yes_mid = (yes_bid + yes_ask) / 2.0 if (yes_bid > 0 and yes_ask > 0) else None
@@ -442,6 +444,35 @@ def analyze_market(
                 )
         except Exception as e:
             print(f"    Consensus tier:  (unavailable: {e})")
+            tier_result = None
+
+        if tier_result is not None:
+            try:
+                # Whether the bet would fire at each threshold. Uses model_home_prob
+                # as the model's home-win prob; kalshi mid is yes-side probability.
+                kalshi_home_prob = yes_mid if bet_side == "home" else (1.0 - yes_mid)
+                model_side_prob = model_home_prob if bet_side == "home" else 1.0 - model_home_prob
+                model_edge = abs(model_side_prob - (yes_mid if bet_side == "home" else 1.0 - yes_mid))
+                would_bet_base = model_edge >= tier_result["base_threshold"]
+                would_bet_adjusted = model_edge >= tier_result["signal_threshold"]
+                record_divergence_decision(
+                    metrics_path=OUTPUTS_DIR / "consensus_divergence_metrics.csv",
+                    game_id=ticker,
+                    decided_at=datetime.now(tz=timezone.utc).isoformat(),
+                    mode=tier_result["mode"],
+                    tier=tier_result["triangulation_tier"],
+                    kalshi_vs_consensus_pp=tier_result["kalshi_vs_consensus_pp"],
+                    model_vs_consensus_pp=tier_result["model_vs_consensus_pp"],
+                    kalshi_vs_model_pp=tier_result["kalshi_vs_model_pp"],
+                    bet_taken=False,
+                    stake=0.0,
+                    base_threshold=tier_result["base_threshold"],
+                    adjusted_threshold=tier_result["signal_threshold"],
+                    would_have_bet_at_base=would_bet_base,
+                    would_have_bet_at_adjusted=would_bet_adjusted,
+                )
+            except Exception as e:
+                print(f"    Metrics log:     (failed: {e})")
 
     model_prob = model_home_prob if bet_side == "home" else model_away_prob
 
