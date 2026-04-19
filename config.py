@@ -38,6 +38,10 @@ for d in [
 
 # ── API Keys ───────────────────────────────────────────────────────────
 ODDS_API_KEY = os.getenv("ODDS_API_KEY", "")
+# Gate for Odds API fetches — default off so exhausted-quota 401s don't
+# spam every 15s of live capture. Flip to "true" in .env when you have a
+# paid tier and want the #8 consensus-divergence signal active.
+ENABLE_ODDS_API = os.getenv("ENABLE_ODDS_API", "false").strip().lower() in ("1", "true", "yes", "on")
 KALSHI_API_KEY = os.getenv("KALSHI_API_KEY", "")
 KALSHI_RSA_PRIVATE_KEY_PATH = os.getenv("KALSHI_RSA_PRIVATE_KEY_PATH", "")
 KALSHI_API_SECRET = os.getenv("KALSHI_API_SECRET", "")  # Legacy, not needed for RSA auth

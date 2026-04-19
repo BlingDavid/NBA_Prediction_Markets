@@ -23,11 +23,16 @@ import requests
 
 from config import (
     CURRENT_SEASON,
+    ENABLE_ODDS_API,
     ODDS_API_BASE,
     ODDS_API_KEY,
     ODDS_SPORT,
     TEAM_ABBREV_MAP,
 )
+
+# Fires at most once per process so a disabled Odds API doesn't flood
+# the 15s capture loop with duplicate warnings.
+_ODDS_API_DISABLED_LOGGED = False
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -574,6 +579,12 @@ def fetch_odds_api_lines(home_team: str = None, away_team: str = None) -> list[d
     Fetch current NBA moneyline odds from The Odds API.
     Returns odds from multiple sportsbooks for comparison.
     """
+    global _ODDS_API_DISABLED_LOGGED
+    if not ENABLE_ODDS_API:
+        if not _ODDS_API_DISABLED_LOGGED:
+            print("  Odds API disabled (set ENABLE_ODDS_API=true in .env to enable)")
+            _ODDS_API_DISABLED_LOGGED = True
+        return []
     if not ODDS_API_KEY or ODDS_API_KEY.startswith("your_"):
         return []
 
