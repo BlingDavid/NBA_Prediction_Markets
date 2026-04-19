@@ -40,6 +40,7 @@ from config import (
     OUTPUTS_DIR,
     TEAM_ABBREV_MAP,
 )
+from bet_decisions import record_decision
 from consensus_divergence import apply_consensus_tier, record_divergence_decision
 from market_scanner import KalshiClient
 from nba_market_utils import parse_nba_ticker
@@ -376,6 +377,11 @@ def analyze_market(
 
     # ── Step 4d: Extra signals (venue edge #3 + ref bias + calibration) ──
     signal_threshold = MIN_EDGE_THRESHOLD
+    # Defaults so Step 5b (decision logging) works with or without --extra-signals.
+    tier_result = None
+    would_bet_base = None
+    would_bet_adjusted = None
+    yes_mid = (yes_bid + yes_ask) / 2.0 if (yes_bid > 0 and yes_ask > 0) else None
     if extra_signals:
         print("\n  Extra signals:")
 
@@ -415,10 +421,8 @@ def analyze_market(
             print(f"    Edge threshold:  (unavailable: {e})")
 
         # Consensus-divergence signal (#8): adjust threshold based on Kalshi↔consensus↔model tier.
-        tier_result = None
         try:
             comparison = get_odds_comparison(home, away)
-            yes_mid = (yes_bid + yes_ask) / 2.0 if (yes_bid > 0 and yes_ask > 0) else None
             tier_result = apply_consensus_tier(
                 comparison=comparison,
                 model_prob_home=model_home_prob,
@@ -578,8 +582,43 @@ def analyze_market(
         else:
             print(f"    VERDICT: Not +EV on this side either")
 
+    # ── Append decision to the unified bet_decisions ledger ──
+    decision_id = None
+    try:
+        # Fall back to edge-vs-threshold when --extra-signals didn't run.
+        wbb = would_bet_base if would_bet_base is not None else (ev["edge"] > MIN_EDGE_THRESHOLD)
+        wba = would_bet_adjusted if would_bet_adjusted is not None else (ev["edge"] > signal_threshold)
+        decision_id = record_decision(
+            decisions_path=OUTPUTS_DIR / "bet_decisions.csv",
+            ticker=ticker,
+            home_team=home,
+            away_team=away,
+            bet_side=bet_side,
+            contract_side="YES",  # ev_analyzer always buys YES on the ticker's contract
+            model_prob_home=model_home_prob,
+            model_prob_away=model_away_prob,
+            kalshi_yes_bid=yes_bid,
+            kalshi_yes_ask=yes_ask,
+            kalshi_yes_mid=yes_mid if yes_mid is not None else 0.0,
+            entry_limit_price=buy_price,     # user crosses the spread → yes_ask (or last_price fallback)
+            edge_pp=ev["edge"] * 100.0,
+            ev=ev["ev_per_contract"],
+            signal_threshold=signal_threshold,
+            base_threshold=MIN_EDGE_THRESHOLD,
+            recommended_stake=ev["recommended_bet"],
+            triangulation_tier=tier_result["triangulation_tier"] if tier_result else 1,
+            kalshi_vs_consensus_pp=tier_result["kalshi_vs_consensus_pp"] if tier_result else None,
+            model_vs_consensus_pp=tier_result["model_vs_consensus_pp"] if tier_result else None,
+            kalshi_vs_model_pp=tier_result["kalshi_vs_model_pp"] if tier_result else None,
+            would_bet_at_base=wbb,
+            would_bet_at_adjusted=wba,
+        )
+    except Exception as e:
+        print(f"  Decision log: (failed: {e})")
+
     # ── Save analysis ──
     analysis = {
+        "decision_id": decision_id,
         "ticker": ticker,
         "home_team": home,
         "away_team": away,
