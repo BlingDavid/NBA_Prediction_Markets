@@ -468,8 +468,9 @@ def train_bootstrap_model(
     ].sort_values(["game_date", "ticker", "captured_at"])
     oof_export.to_csv(oof_path, index=False)
 
-    scored_matrix.sort_values(["game_date", "ticker", "captured_at"]).to_csv(scored_path, index=False)
-    scored_matrix.sort_values(["game_date", "ticker", "captured_at"]).to_csv(latest_scored_path, index=False)
+    scored_sorted = scored_matrix.sort_values(["game_date", "ticker", "captured_at"])
+    scored_sorted.to_csv(scored_path, index=False)
+    scored_sorted.to_csv(latest_scored_path, index=False)
 
     report = {
         "model_name": model_name,

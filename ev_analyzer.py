@@ -381,6 +381,9 @@ def analyze_market(
     tier_result = None
     would_bet_base = None
     would_bet_adjusted = None
+    # Cache the odds comparison fetched for the consensus-tier signal so
+    # Step 5b can reuse it instead of issuing a second HTTP call.
+    comparison = None
     yes_mid = (yes_bid + yes_ask) / 2.0 if (yes_bid > 0 and yes_ask > 0) else None
     if extra_signals:
         print("\n  Extra signals:")
@@ -532,6 +535,8 @@ def analyze_market(
     try:
         if game_ctx and game_ctx.get("odds"):
             odds_comparison = game_ctx["odds"]
+        elif comparison is not None:
+            odds_comparison = comparison
         else:
             odds_comparison = get_odds_comparison(home, away)
 
@@ -659,7 +664,7 @@ def analyze_market(
             order_from_ev(
                 client=auth_client,
                 ticker=ticker,
-                side="yes" if bet_side == "home" else "yes",  # Ticker already encodes the team
+                side="yes",  # ticker already encodes the team; ev_analyzer always buys YES
                 model_prob=model_prob,
                 market_price_cents=int(buy_price * 100),
                 kelly_fraction=ev["kelly_fraction"],
