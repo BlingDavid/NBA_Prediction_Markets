@@ -16,7 +16,14 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
-from live_bootstrap_model import _apply_final_predictions, _apply_shrinkage
+from live_bootstrap_model import (
+    _apply_final_predictions,
+    _apply_shrinkage,
+    _build_group_weights,
+    _lift_table,
+    _select_feature_columns,
+    _tune_shrinkage,
+)
 
 
 def _fit_tiny_model() -> Pipeline:
@@ -145,3 +152,123 @@ class TestApplyFinalPredictions:
         )
 
         pd.testing.assert_frame_equal(scored, scored_before)
+
+
+class TestApplyShrinkage:
+    def test_alpha_zero_collapses_to_base_rate(self):
+        y = np.array([0.1, 0.5, 0.9])
+        out = _apply_shrinkage(y, base_rate=0.4, alpha=0.0)
+        np.testing.assert_allclose(out, [0.4, 0.4, 0.4])
+
+    def test_alpha_one_leaves_probs_unchanged(self):
+        y = np.array([0.1, 0.5, 0.9])
+        out = _apply_shrinkage(y, base_rate=0.3, alpha=1.0)
+        np.testing.assert_allclose(out, [0.1, 0.5, 0.9])
+
+    def test_partial_shrinkage_is_linear_interpolation(self):
+        # 0.5 * (0.8 - 0.5) + 0.5 = 0.65
+        out = _apply_shrinkage(np.array([0.8]), base_rate=0.5, alpha=0.5)
+        assert out[0] == pytest.approx(0.65)
+
+    def test_clipping_prevents_zero_and_one(self):
+        # With base=0 and alpha=1, shrunk = y_prob; clip lower bound at 1e-6
+        out = _apply_shrinkage(np.array([0.0, 1.0]), base_rate=0.0, alpha=1.0)
+        assert out[0] >= 1e-6
+        assert out[1] <= 1 - 1e-6
+
+
+class TestTuneShrinkage:
+    def test_returns_21_grid_candidates(self):
+        rng = np.random.default_rng(0)
+        y = pd.Series(rng.integers(0, 2, size=100))
+        y_prob = rng.uniform(size=100)
+        result = _tune_shrinkage(y, y_prob)
+        assert len(result["grid"]) == 21
+        assert result["selection_metric"] == "logloss"
+
+    def test_best_alpha_minimizes_logloss(self):
+        rng = np.random.default_rng(1)
+        y = pd.Series(rng.integers(0, 2, size=200))
+        y_prob = rng.uniform(size=200)
+        result = _tune_shrinkage(y, y_prob)
+        best = min(result["grid"], key=lambda r: r["metrics"]["logloss"])
+        assert result["alpha"] == best["alpha"]
+
+    def test_base_rate_matches_empirical_positive_rate(self):
+        y = pd.Series([0, 0, 0, 1, 1])
+        y_prob = np.array([0.2, 0.3, 0.4, 0.6, 0.7])
+        result = _tune_shrinkage(y, y_prob)
+        assert result["base_rate"] == pytest.approx(0.4, abs=1e-6)
+
+
+class TestLiftTable:
+    def test_returns_row_per_quantile(self):
+        rng = np.random.default_rng(0)
+        y = pd.Series(rng.integers(0, 2, size=100))
+        y_prob = rng.uniform(size=100)
+        rows = _lift_table(y, y_prob, quantiles=(0.70, 0.90))
+        assert [r["quantile"] for r in rows] == [0.70, 0.90]
+
+    def test_top_bucket_rate_higher_for_correlated_signal(self):
+        # y correlates with y_prob → top bucket should beat the base rate
+        y_prob = np.linspace(0.0, 1.0, 200)
+        y = pd.Series((y_prob > 0.5).astype(int))
+        rows = _lift_table(y, y_prob, quantiles=(0.90,))
+        assert rows[0]["lift_vs_base"] > 1.0
+
+    def test_lift_vs_base_none_when_no_positives(self):
+        y = pd.Series([0] * 10)
+        y_prob = np.linspace(0.1, 0.9, 10)
+        rows = _lift_table(y, y_prob, quantiles=(0.70,))
+        assert rows[0]["lift_vs_base"] is None
+
+
+class TestSelectFeatureColumns:
+    def test_keeps_valid_varying_columns(self):
+        df = pd.DataFrame({"a": [1, 2, 3], "b": [0.1, 0.2, 0.3]})
+        selected, dropped = _select_feature_columns(df, ["a", "b"])
+        assert selected == ["a", "b"]
+        assert dropped == {}
+
+    def test_drops_missing_column_with_reason(self):
+        df = pd.DataFrame({"a": [1, 2, 3]})
+        selected, dropped = _select_feature_columns(df, ["a", "b"])
+        assert selected == ["a"]
+        assert dropped == {"b": "missing_from_matrix"}
+
+    def test_drops_all_null_column(self):
+        df = pd.DataFrame({"a": [1, 2, 3], "b": [None, None, None]})
+        selected, dropped = _select_feature_columns(df, ["a", "b"])
+        assert selected == ["a"]
+        assert dropped == {"b": "all_missing"}
+
+    def test_drops_constant_column(self):
+        df = pd.DataFrame({"a": [1, 2, 3], "b": [5, 5, 5]})
+        selected, dropped = _select_feature_columns(df, ["a", "b"])
+        assert selected == ["a"]
+        assert dropped == {"b": "constant_or_single_value"}
+
+
+class TestBuildGroupWeights:
+    def test_sum_equals_row_count(self):
+        groups = pd.Series(["a", "a", "a", "b", "b", "c"])
+        w = _build_group_weights(groups)
+        assert w.sum() == pytest.approx(len(groups))
+
+    def test_larger_group_gets_smaller_per_row_weight(self):
+        groups = pd.Series(["big", "big", "big", "big", "small"])
+        w = _build_group_weights(groups)
+        big_weight = w[groups == "big"].iloc[0]
+        small_weight = w[groups == "small"].iloc[0]
+        assert small_weight > big_weight
+
+    def test_equal_group_sizes_give_equal_weights(self):
+        groups = pd.Series(["a", "a", "b", "b"])
+        w = _build_group_weights(groups)
+        assert w.nunique() == 1
+        assert w.iloc[0] == pytest.approx(1.0)
+
+    def test_preserves_input_index(self):
+        groups = pd.Series(["a", "b", "a"], index=[10, 20, 30])
+        w = _build_group_weights(groups)
+        assert list(w.index) == [10, 20, 30]
