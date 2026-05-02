@@ -70,3 +70,15 @@ def test_rejects_missing_field():
     row.pop("yes_bid")
     passed, reason = evaluate(row)
     assert not passed and reason == "missing_field:yes_bid"
+
+
+def test_rejects_nan_open_interest():
+    row = _ok_row(open_interest=float("nan"))
+    passed, reason = evaluate(row)
+    assert not passed and reason == "missing_field:open_interest"
+
+
+def test_rejects_nan_yes_bid():
+    row = _ok_row(yes_bid=float("nan"))
+    passed, reason = evaluate(row)
+    assert not passed and reason == "missing_field:yes_bid"

@@ -6,6 +6,7 @@ queries.
 """
 from __future__ import annotations
 
+import math
 from typing import Any
 
 OI_FLOOR = 100
@@ -22,7 +23,10 @@ REQUIRED_FIELDS = (
 
 def evaluate(row: dict[str, Any]) -> tuple[bool, str]:
     for field in REQUIRED_FIELDS:
-        if field not in row or row[field] is None:
+        val = row.get(field)
+        if val is None:
+            return False, f"missing_field:{field}"
+        if isinstance(val, float) and math.isnan(val):
             return False, f"missing_field:{field}"
 
     if str(row["bet_side"]).lower() != "home":
