@@ -10,8 +10,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import pandas as pd
-
 from paper_trader import trade_log
 from paper_trader.cost_model import winner_fee_per_contract
 
