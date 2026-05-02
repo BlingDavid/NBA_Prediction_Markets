@@ -7,10 +7,13 @@ the live engine would, then advances simulated time to the next captured_at.
 from __future__ import annotations
 
 import argparse
+import sys
 import time
 from pathlib import Path
 
 import pandas as pd
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from run_paper_trader import build_engine_context, process_tick
 
