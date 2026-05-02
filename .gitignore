@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Environment
+.env
+.pem
+*.pem
+venv/
+.venv/
+
+# Data & model artifacts
+data/raw/
+data/processed/
+data/live/
+models/*.pkl
+outputs/
+
+# Paper trader outputs
+outputs/paper_trades/
+
+# Worktrees
+.worktrees/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
