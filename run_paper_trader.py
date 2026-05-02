@@ -42,6 +42,55 @@ LIVE_PROMOTION_SHARPE = 1.0
 LIVE_PROMOTION_MAX_DD_FRACTION = 0.10
 
 
+def replay_from_log(log_path: Path, output_dir: Path, bankroll_initial: float) -> None:
+    """Reconstruct closed_trades.csv and trader_state.json from trader_log.jsonl.
+
+    Used by the disaster-recovery story and the replay invariant test.
+    Reads only `entry`/`exit`/`tick` events (the rest are diagnostic).
+    """
+    import json as _json
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    closed_csv = output_dir / "closed_trades.csv"
+    state_path = output_dir / "trader_state.json"
+    open_csv = output_dir / "open_positions.csv"
+    if closed_csv.exists():
+        closed_csv.unlink()
+    pm = PositionManager(
+        state_path=state_path, log_path=output_dir / "_replay_unused.jsonl",
+        closed_csv_path=closed_csv, open_csv_path=open_csv,
+        bankroll_initial=bankroll_initial, mode_sizing="A",
+        live_or_paper="paper",
+    )
+    open_by_id: dict[str, dict[str, Any]] = {}
+    with Path(log_path).open() as fh:
+        for line in fh:
+            event = _json.loads(line)
+            etype = event.get("event_type")
+            if etype == "entry":
+                position = {k: event[k] for k in (
+                    "trade_id", "ticker", "game_key", "home_team", "away_team",
+                    "entry_captured_at", "entry_yes_ask", "entry_yes_mid",
+                    "entry_yes_bid", "contracts", "p_raw", "p_calibrated",
+                    "expected_pnl_per_contract", "bankroll_at_entry",
+                )}
+                open_by_id[event["trade_id"]] = position
+                pm.open_positions.append(position)
+            elif etype == "exit":
+                tid = event["trade_id"]
+                if tid in open_by_id:
+                    pos = open_by_id.pop(tid)
+                    pm.open_positions = [p for p in pm.open_positions if p["trade_id"] != tid]
+                    pm._close_position(
+                        pos=pos,
+                        exit_captured_at=event["exit_captured_at"],
+                        exit_yes_bid=event["exit_yes_bid"],
+                        exit_yes_mid=event["exit_yes_mid"],
+                        exit_basis=event["exit_basis"],
+                    )
+    pm.write_state()
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
