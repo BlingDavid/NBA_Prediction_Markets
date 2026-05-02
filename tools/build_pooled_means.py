@@ -37,8 +37,9 @@ def main() -> int:
     args = parser.parse_args()
 
     cols = ["bet_side", "label_home_up_5m", "label_yes_mid_move_5m"]
-    df = pd.read_csv(args.scored_rows, usecols=cols)
-    df = df[df["bet_side"].astype(str).str.lower() == "home"]
+    df_all = pd.read_csv(args.scored_rows, usecols=cols)
+    rows_total = int(len(df_all))
+    df = df_all[df_all["bet_side"].astype(str).str.lower() == "home"]
     df = df.dropna(subset=["label_home_up_5m", "label_yes_mid_move_5m"])
 
     rises = df[df["label_home_up_5m"] == 1]["label_yes_mid_move_5m"]
@@ -47,7 +48,7 @@ def main() -> int:
 
     payload = {
         "source": str(args.scored_rows),
-        "rows_total": int(len(df)),
+        "rows_total": rows_total,
         "rows_home_side_labeled": int(len(df)),
         "delta_col": "label_yes_mid_move_5m",
         "label_col": "label_home_up_5m",
