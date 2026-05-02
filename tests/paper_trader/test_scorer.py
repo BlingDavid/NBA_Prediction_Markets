@@ -101,3 +101,35 @@ def test_score_handles_multiple_rows(bundle):
     p_raw, p_cal = score(bundle, df)
     assert p_raw.shape == (2,)
     assert p_cal.shape == (2,)
+
+
+def test_score_injects_nan_for_missing_feature_columns(bundle, monkeypatch):
+    """The score() function must inject NaN for any feature_col that's
+    absent from the engineered df, so the model's SimpleImputer can fill
+    it. Simulates a missing column by patching engineer_features to drop
+    a column that's in feature_cols."""
+    from paper_trader.scorer import engineer_features as orig_engineer_features
+
+    # Pick the first feature column to drop during engineering
+    col_to_drop = bundle["feature_cols"][0]
+
+    def mock_engineer_features(df):
+        engineered = orig_engineer_features(df)
+        # Drop a column that score() expects, forcing injection to fire
+        if col_to_drop in engineered.columns:
+            engineered = engineered.drop(columns=[col_to_drop])
+        return engineered
+
+    monkeypatch.setattr("paper_trader.scorer.engineer_features", mock_engineer_features)
+
+    df = pd.DataFrame([_raw_row()])
+    # If injection is broken, the model will raise KeyError when it tries to
+    # access the missing column. With injection working, score() adds NaN for
+    # the missing column, and the pipeline's SimpleImputer fills it with an
+    # imputed value (median from training, or 0.0 if all-NaN at train time).
+    # The test asserts the call succeeds and returns finite scalars.
+    p_raw, p_cal = score(bundle, df)
+    assert p_raw.shape == (1,)
+    assert p_cal.shape == (1,)
+    assert np.isfinite(p_raw[0])
+    assert np.isfinite(p_cal[0])
