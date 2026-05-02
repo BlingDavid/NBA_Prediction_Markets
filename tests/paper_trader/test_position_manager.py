@@ -26,8 +26,8 @@ def test_kelly_contracts_basic():
     assert contracts == 125
 
 def test_kelly_contracts_floor_one():
-    # mu tiny, var huge → f tiny → contracts floor to 1
-    contracts = kelly_contracts(mu=0.0001, var=0.1, bankroll=1000.0, yes_ask=0.50)
+    # f tiny enough that dollars < yes_ask → math gives 0 → floor lifts to 1
+    contracts = kelly_contracts(mu=1e-9, var=1.0, bankroll=1.0, yes_ask=0.50)
     assert contracts == 1
 
 

@@ -25,18 +25,16 @@ def kelly_contracts(mu: float, var: float, bankroll: float, yes_ask: float) -> i
     """Continuous-payoff Kelly: f = mu / sigma^2, capped at 5% of bankroll, floored at 1.
 
     Returns integer contract count. yes_ask is the entry price (bankroll
-    consumed = contracts * yes_ask)."""
+    consumed = contracts * yes_ask).
+    """
     cap_dollars = KELLY_CAP_FRACTION * float(bankroll)
     if var <= 0.0:
         # Degenerate variance: spend the cap.
         dollars = cap_dollars
     else:
         f = float(mu) / float(var)
-        if f < 0.01:
-            # Kelly fraction too tiny; return 1 contract minimum.
-            return 1
+        f = max(0.0, min(f, KELLY_CAP_FRACTION))  # cap at 5% of bankroll
         dollars = f * float(bankroll)
-        dollars = min(dollars, cap_dollars)  # cap at 5% of bankroll
     contracts = int(dollars / float(yes_ask))
     return max(contracts, 1)
 
