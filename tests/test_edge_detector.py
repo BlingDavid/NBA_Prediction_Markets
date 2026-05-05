@@ -1,4 +1,4 @@
-"""Edge detector math: spread cover probability + total over probability.
+"""Edge detector math: spread cover probability + total over probability + shrinkage.
 
 These tests lock in the fix for two bugs that surfaced when the bet card
 showed +38% spread edges across every game with implied_prob hardcoded at
@@ -171,3 +171,119 @@ def test_find_edges_total_implied_prob_reflects_actual_price():
         pytest.skip("no qualifying total bet")
     impl = total_bets.iloc[0]["implied_prob"]
     assert impl == pytest.approx(0.5455, abs=0.01)
+
+
+# ───────────────────────── shrinkage ─────────────────────────
+
+
+def test_shrink_edge_passes_through_below_free_threshold():
+    """Edges within the well-calibrated zone (|edge| ≤ 0.10 by default)
+    pass through unchanged. The backtest's 0.05–0.10 edge bucket already
+    realised +38% ROI; shrinking it would just cost EV."""
+    # +0.08 edge: fair=0.50, model=0.58 → unchanged
+    out = ed._shrink_edge(model_prob=0.58, fair_prob=0.50)
+    assert out == pytest.approx(0.58, abs=1e-6)
+    # -0.08 edge stays unchanged too
+    out = ed._shrink_edge(model_prob=0.42, fair_prob=0.50)
+    assert out == pytest.approx(0.42, abs=1e-6)
+
+
+def test_shrink_edge_at_boundary_unchanged():
+    """At |edge| == free_threshold the shrinkage factor is exactly 1.0."""
+    out = ed._shrink_edge(model_prob=0.60, fair_prob=0.50)  # edge = +0.10
+    assert out == pytest.approx(0.60, abs=1e-6)
+
+
+def test_shrink_edge_full_clamp_above_max_threshold():
+    """At |edge| ≥ max_threshold (0.30 default), edge is shrunk by min_factor (0.5)."""
+    # +0.40 edge: fair=0.20, model=0.60 → shrunk_edge = 0.40 * 0.5 = 0.20 → 0.40
+    out = ed._shrink_edge(model_prob=0.60, fair_prob=0.20)
+    assert out == pytest.approx(0.40, abs=1e-6)
+
+
+def test_shrink_edge_lal_realistic_case():
+    """The LAL +745 case: model=0.359, fair≈0.115, raw edge=+0.244.
+    Linear shrinkage at |edge|=0.244 between thresholds 0.10 and 0.30:
+       t = (0.244 - 0.10) / (0.30 - 0.10) = 0.72
+       factor = 1.0 - t * (1.0 - 0.5) = 1.0 - 0.36 = 0.64
+       shrunk_edge = 0.244 * 0.64 = 0.1562
+       shrunk_model = 0.115 + 0.1562 = 0.2712"""
+    out = ed._shrink_edge(model_prob=0.359, fair_prob=0.115)
+    assert out == pytest.approx(0.2712, abs=1e-3)
+
+
+def test_shrink_edge_preserves_direction():
+    """Shrunk model_prob must remain on the same side of fair_prob as the
+    original. We don't want shrinkage to flip a bet from YES to NO."""
+    # Strong positive edge stays positive
+    assert ed._shrink_edge(0.80, 0.20) > 0.20
+    # Strong negative edge stays negative
+    assert ed._shrink_edge(0.20, 0.80) < 0.80
+
+
+def test_shrink_edge_in_range():
+    """Shrunk model_prob must always be in [0, 1]."""
+    for mp in [0.01, 0.05, 0.50, 0.95, 0.99]:
+        for fp in [0.05, 0.50, 0.95]:
+            out = ed._shrink_edge(mp, fp)
+            assert 0.0 <= out <= 1.0, f"out-of-range for model={mp}, fair={fp}"
+
+
+def test_find_edges_shrinkage_reduces_lal_style_call(monkeypatch):
+    """Integration: LAL underdog with +0.24 raw edge should report a
+    smaller shrunk edge in the bet card."""
+    import pandas as pd
+    predictions = pd.DataFrame([{
+        "game_id": "g1", "date": "2026-05-05",
+        "home_team": "OKC", "away_team": "LAL",
+        "home_win_prob": 0.640, "away_win_prob": 0.360,
+        "predicted_spread": 12.0, "predicted_total": 220.0,
+    }])
+    odds = pd.DataFrame([{
+        "home_team": "OKC", "away_team": "LAL",
+        "ml_home": -750, "ml_away": +600,  # LAL implied ≈ 0.142, fair ≈ 0.115
+        "spread_home": -12.0, "spread_home_price": -110,
+        "total_line": 220.0, "total_over_price": -110,
+    }])
+    bets_shrunk = ed.find_edges(predictions, odds, min_edge=0.0, apply_shrinkage=True)
+    bets_raw = ed.find_edges(predictions, odds, min_edge=0.0, apply_shrinkage=False)
+
+    lal_shrunk = bets_shrunk[(bets_shrunk["market"] == "moneyline") & (bets_shrunk["side"] == "away")]
+    lal_raw = bets_raw[(bets_raw["market"] == "moneyline") & (bets_raw["side"] == "away")]
+
+    if len(lal_raw) == 0 or len(lal_shrunk) == 0:
+        pytest.skip("LAL ML edge didn't qualify in one of the modes")
+
+    # Raw edge should be larger than shrunk edge.
+    assert lal_raw.iloc[0]["edge"] > lal_shrunk.iloc[0]["edge"], (
+        f"shrinkage didn't reduce edge: raw={lal_raw.iloc[0]['edge']}, "
+        f"shrunk={lal_shrunk.iloc[0]['edge']}"
+    )
+    # Both should still be positive (direction preserved).
+    assert lal_shrunk.iloc[0]["edge"] > 0
+    # Raw edge is preserved as model_prob_raw column.
+    assert "model_prob_raw" in lal_shrunk.columns
+    assert lal_shrunk.iloc[0]["model_prob_raw"] == pytest.approx(0.360, abs=1e-3)
+    # And the displayed model_prob is the shrunk value.
+    assert lal_shrunk.iloc[0]["model_prob"] < lal_shrunk.iloc[0]["model_prob_raw"]
+
+
+def test_find_edges_no_shrink_flag_passes_raw_through():
+    """apply_shrinkage=False should leave model_prob == model_prob_raw."""
+    import pandas as pd
+    predictions = pd.DataFrame([{
+        "game_id": "g1", "date": "2026-05-05",
+        "home_team": "OKC", "away_team": "LAL",
+        "home_win_prob": 0.640, "away_win_prob": 0.360,
+        "predicted_spread": 12.0, "predicted_total": 220.0,
+    }])
+    odds = pd.DataFrame([{
+        "home_team": "OKC", "away_team": "LAL",
+        "ml_home": -750, "ml_away": +600,
+        "spread_home": -12.0, "spread_home_price": -110,
+        "total_line": 220.0, "total_over_price": -110,
+    }])
+    bets = ed.find_edges(predictions, odds, min_edge=0.0, apply_shrinkage=False)
+    if not bets.empty and "model_prob_raw" in bets.columns:
+        # All rows: model_prob == model_prob_raw under raw mode.
+        assert (bets["model_prob"] == bets["model_prob_raw"]).all()
