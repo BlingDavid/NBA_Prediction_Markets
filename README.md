@@ -4,7 +4,7 @@ Quantitative model for finding edge in NBA event contracts (moneyline, spreads, 
 
 ## What it does
 
-The system estimates a fair home-win probability for each game, compares it to the market's implied probability from live Kalshi orderbooks, and flags contracts where the modeled edge clears a threshold. It runs both as a historical backtester and as a live scanner against real-time markets.
+The system estimates a fair home-win probability for each game, compares it to an implied probability, and flags contracts where the modeled edge clears a threshold. It runs in two modes, and the distinction matters: the **live scanner** (`market_scanner.py`, `ev_analyzer.py`) prices against real Kalshi orderbooks, while the **historical backtester** currently prices against a synthetic line rather than recorded odds — see Results.
 
 ## Approach
 
@@ -18,12 +18,17 @@ The system estimates a fair home-win probability for each game, compares it to t
 
 ## Results
 
-Measured on the committed backtest output (`outputs/backtest_bets.csv`): **1,076 bets placed over the 2024-25 season, 2024-10-22 through 2025-04-13**, from a starting bankroll of $10,000.
+**The backtest does not evaluate the model against a real market, and its profit figures should not be read as evidence of edge.** `backtester.py::_generate_synthetic_odds` constructs the counterparty price synthetically, as `elo_home_win_prob + N(0, 0.04)` clipped to [0.05, 0.95] with 4.5% vig applied. Since `elo_home_win_prob` is itself one of the features the ensemble trains on (`features.py::get_feature_columns`), the "edge" being traded is the ensemble's disagreement with one of its own inputs. Details in Notes & limitations below. The honest summary of this repo today: the feature pipeline, the ensemble, and the live Kalshi integration are real; the backtest that scores them is not.
 
-| Metric | Model | Market-implied baseline |
+The classification metrics below are meaningful — they are measured against actual game outcomes. Held-out test split, 2024-25 season:
+
+| Metric | Ensemble | ELO baseline |
 |---|---|---|
-| Brier score | 0.2187 | **0.2163** |
-| Log loss | 0.6277 | **0.6226** |
+| Accuracy | 0.6447 | — |
+| ROC-AUC | 0.7142 | — |
+| Brier score | 0.2213 | — |
+
+Against the *synthetic* line, over 1,056 bets in the 2024-25 season from a $10,000 bankroll, the model posts a Brier score of 0.2187 versus 0.2163 for that line — i.e. it does not even outperform ELO-plus-noise on the contracts it selects.
 
 Calibration of the model's probability against realized outcomes, on the games it chose to bet:
 
@@ -35,17 +40,17 @@ Calibration of the model's probability against realized outcomes, on the games i
 | 0.6 – 0.8 | 81 | 0.642 |
 | 0.8 – 1.0 | 6 | 0.667 |
 
-**Key finding: the model does not beat the market on the contracts it selects.** Its Brier score and log loss are both marginally *worse* than simply taking the market's implied probability, and the calibration table shows it running consistently hot — the 0.4–0.6 bucket wins 41% of the time, and the 0.2–0.4 bucket wins 26.5%. Since the bet-selection rule fires precisely where model probability most exceeds market probability, that overconfidence is concentrated in exactly the population being staked. The average flagged "edge" is 13.6 percentage points, which is not a plausible standing mispricing in a market this liquid; it is a signal that the model is miscalibrated relative to the price, not that the price is wrong.
-
-The headline bankroll number from this run is not a real result and should not be read as one. See below.
+**Key finding: the model runs consistently overconfident.** The 0.4–0.6 bucket wins 41% of the time and the 0.2–0.4 bucket wins 26.5%. Because the bet-selection rule fires precisely where model probability most exceeds the reference price, that overconfidence is concentrated in exactly the population being staked. The average flagged "edge" is 13.6 percentage points — against a real market that would be implausible on its face, and here it simply measures how far the ensemble departs from its own ELO input.
 
 ## Notes & limitations
 
-- **The backtest's bankroll curve is not credible and is retained only as a diagnostic.** The run compounds to roughly $5.65B from $10,000 across 1,076 sequential bets. The per-bet arithmetic is internally consistent — a realized +22% return per dollar staked, compounded at a 2–5% stake fraction over 1,076 bets, does produce that figure — but the premises don't survive contact with reality. It assumes bets settle strictly sequentially with immediate reinvestment (real NBA slates run concurrently, so capital cannot recycle that fast), and it assumes unlimited fill at the quoted price: by April the sizing rule is staking over $250M on a single NBA moneyline, orders of magnitude beyond what those Kalshi markets can absorb. A realistic version needs a per-market liquidity cap and same-day bankroll locking.
+- **The backtest prices against a synthetic line, not a market — this is the top item to fix.** `_generate_synthetic_odds` derives the counterparty price from `elo_home_win_prob`, a feature the ensemble is trained on, plus `N(0, 0.04)` noise and 4.5% vig. The consequences: the reported "edge" is self-referential; the 100% CLV rate in the health check is tautological, since the bet trigger *is* deviation from that line; and the maximum decimal odds in the output is exactly 20.9, which is `1.045 / (1 − 0.95)` — the vig over the clip bound, not anything a market quoted. The fix is to wire the historical odds that `data_ingest.py` already knows how to pull into the backtest path and re-run. Until then, no profit number from `backtester.py` means anything.
+- **The bankroll curve is not credible even on its own terms.** The run compounds to roughly $7.6B from $10,000. The per-bet arithmetic is internally consistent, but it assumes bets settle strictly sequentially with immediate reinvestment (real NBA slates run concurrently, so capital cannot recycle that fast), and unlimited fill at the quoted price: by April the sizing rule stakes over $250M on a single NBA moneyline, orders of magnitude beyond what those Kalshi markets can absorb. A realistic version needs a per-market liquidity cap and same-day bankroll locking.
+- **The backtest is not reproducible run to run.** The synthetic noise draw is never seeded, so bet count and ROI move between identical invocations — 1,056 and 1,076 bets on two runs of the same code and data.
+- **The Monte Carlo is broken.** `monte_carlo_bankroll` resamples historical profits without rescaling stake to the current bankroll, so paths run negative: it reports a median final bankroll of −$2.1M and P(ruin) of 100%, on the same bet log that the main backtest reports as profitable.
 - **Fills are assumed at the displayed price.** Slippage, the bid/ask spread, and Kalshi fees are not deducted. On thin markets these costs are large relative to any genuine edge.
-- **Selection bias in the reported metrics.** Brier and log loss above are computed on the ~1,076 games the strategy chose to bet, not on the full four-season universe, so they measure the model where it is most confident rather than on average.
+- **Selection bias in the reported metrics.** Brier and log loss over the bet population are computed on the ~1,056 games the strategy chose, not the full four-season universe, so they measure the model where it is most confident rather than on average.
 - **Coverage is uneven.** Moneyline is the best-supported market; spreads and totals are partial.
-- **Realized win rate is 36.3% at average decimal odds of 5.44** (≈18% implied). A 2x standing discrepancy of that size across a full season is far more likely to indicate a join or side-assignment issue between the game records and the odds records than a genuine inefficiency; that reconciliation is the next thing to fix.
 
 ## Repository layout
 
