@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Secrets — never commit
+.env
+*.pem
+*.key
+
+# Trained model artifacts (regenerate with backtester.py)
+*.pkl
+
+# Local one-time maintenance script
+cleanup_repo.sh
