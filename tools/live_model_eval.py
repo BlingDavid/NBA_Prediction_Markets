@@ -220,6 +220,86 @@ def load_pooled_means() -> tuple[float, float]:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Shared metric computation (importable by compare_models.py)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def compute_metrics_from_arrays(
+    y_true: np.ndarray,
+    y_prob: np.ndarray,
+    e_up: float,
+    e_down: float,
+    primary_spread: float = 0.01,
+    n_bins: int = 10,
+) -> dict:
+    """Compute all comparison-relevant metrics from label + probability arrays.
+
+    Pure function — no I/O, no printing.  Suitable for unit tests and for
+    import by tools/compare_models.py.
+
+    Returns a flat dict containing:
+        n_rows, base_rate, roc_auc, average_precision, brier, brier_naive,
+        brier_skill, log_loss, e_up, e_down, ev_threshold_primary,
+        n_above_ev_threshold, frac_above_ev_threshold, prec_above_ev_threshold,
+        max_reliability_gap_above_p20, primary_spread, rel_df.
+    """
+    y_true = np.asarray(y_true)
+    y_prob = np.asarray(y_prob, dtype=float)
+
+    n_rows = int(len(y_true))
+    base_rate = float(y_true.mean())
+
+    roc_auc = float(roc_auc_score(y_true, y_prob))
+    avg_precision = float(average_precision_score(y_true, y_prob))
+    brier = float(brier_score_loss(y_true, y_prob))
+    brier_naive = float(base_rate * (1 - base_rate))
+    brier_skill = 1.0 - brier / brier_naive if brier_naive > 0 else float("nan")
+    ll = float(log_loss(y_true, y_prob))
+
+    # Reliability table + overconfidence metric
+    rel_df = reliability_table_from_oof(y_true, y_prob, n_bins=n_bins)
+    # Max |gap| for bins whose avg_pred > 0.20 (overconfidence in live-relevant range)
+    high_p_bins = rel_df[rel_df["avg_pred"] > 0.20]
+    if len(high_p_bins) > 0:
+        max_rel_gap = float(high_p_bins["gap"].abs().max())
+    else:
+        max_rel_gap = float("nan")
+
+    # EV threshold
+    ev_result = ev_breakeven_threshold(e_up, e_down, primary_spread)
+    ev_threshold_primary = ev_result["threshold"]
+    if not math.isnan(ev_threshold_primary):
+        n_above = int((y_prob >= ev_threshold_primary).sum())
+        frac_above = n_above / n_rows if n_rows > 0 else 0.0
+        tp_above = int(y_true[y_prob >= ev_threshold_primary].sum())
+        prec_above = tp_above / n_above if n_above > 0 else 0.0
+    else:
+        n_above = 0
+        frac_above = 0.0
+        prec_above = 0.0
+        ev_threshold_primary = None  # normalise NaN → None
+
+    return {
+        "n_rows": n_rows,
+        "base_rate": base_rate,
+        "roc_auc": roc_auc,
+        "average_precision": avg_precision,
+        "brier": brier,
+        "brier_naive": brier_naive,
+        "brier_skill": brier_skill,
+        "log_loss": ll,
+        "e_up": e_up,
+        "e_down": e_down,
+        "ev_threshold_primary": ev_threshold_primary,
+        "n_above_ev_threshold": n_above,
+        "frac_above_ev_threshold": frac_above,
+        "prec_above_ev_threshold": prec_above,
+        "max_reliability_gap_above_p20": max_rel_gap,
+        "primary_spread": primary_spread,
+        "rel_df": rel_df,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Main evaluation
 # ═══════════════════════════════════════════════════════════════════════════
 
