@@ -16,7 +16,7 @@ import sklearn
 
 # Re-use training-time helpers verbatim. If these symbols move, update the
 # import — don't recreate the formulas.
-from live_training_matrix import _safe_numeric, _status_flag
+from live_training_matrix import _safe_numeric, _status_flag, compute_momentum_features
 
 
 REGULATION_SECONDS = 48 * 60
@@ -111,6 +111,18 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
         df["flag_status_post"] = 0
     df["flag_has_game_state"] = df["home_score"].notna().astype(int)
     df["flag_has_time_state"] = df["seconds_elapsed"].notna().astype(int)
+
+    # ------------------------------------------------------------------
+    # Momentum / velocity features — shared implementation from
+    # live_training_matrix.compute_momentum_features (single source of truth).
+    # When called with a sorted multi-row df (same ticker), features are
+    # computed from trailing history. When called with a single row
+    # (typical paper-trader tick), outputs are NaN and the model's
+    # SimpleImputer fills them with training-set medians.
+    # ------------------------------------------------------------------
+    if "ticker" in df.columns and "captured_at" in df.columns:
+        df = df.sort_values(["ticker", "captured_at"]).copy()
+    df = compute_momentum_features(df)
 
     return df
 

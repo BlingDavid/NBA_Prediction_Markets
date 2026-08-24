@@ -318,7 +318,23 @@ def train_bootstrap_model(
     require_game_state: bool = False,
     live_only: bool = False,
     model_name: str = DEFAULT_MODEL_NAME,
+    models_dir: Path | None = None,
+    outputs_dir: Path | None = None,
 ) -> dict:
+    """Train and persist a bootstrap in-game model.
+
+    Parameters
+    ----------
+    models_dir : Path or None
+        Directory to write the .pkl artifact. Defaults to MODELS_DIR from config.
+        Pass an alternative (e.g. ``models/candidates/``) to avoid overwriting
+        the deployed model.
+    outputs_dir : Path or None
+        Directory to write report, OOF predictions, and scored-rows CSV.
+        Defaults to OUTPUTS_DIR from config. ``latest_*`` symlink artifacts are
+        only written when outputs_dir is None (i.e. the default path), so
+        candidate runs do not pollute the live-trader's outputs.
+    """
     matrix, labeled_rows, feature_cols, metadata = build_bootstrap_dataset(
         target=target,
         horizon_minutes=horizon_minutes,
@@ -428,10 +444,18 @@ def train_bootstrap_model(
         scored_matrix["target_available"] = scored_matrix[target].notna().astype(int)
 
     trained_at = datetime.now(timezone.utc).isoformat()
-    model_path = MODELS_DIR / f"{model_name}.pkl"
-    report_path = OUTPUTS_DIR / f"{model_name}_report.json"
-    oof_path = OUTPUTS_DIR / f"{model_name}_oof_predictions.csv"
-    scored_path = OUTPUTS_DIR / f"{model_name}_scored_rows.csv"
+    _models_dir = Path(models_dir) if models_dir is not None else MODELS_DIR
+    _outputs_dir = Path(outputs_dir) if outputs_dir is not None else OUTPUTS_DIR
+    _models_dir.mkdir(parents=True, exist_ok=True)
+    _outputs_dir.mkdir(parents=True, exist_ok=True)
+    _using_default_outputs = outputs_dir is None
+
+    model_path = _models_dir / f"{model_name}.pkl"
+    report_path = _outputs_dir / f"{model_name}_report.json"
+    oof_path = _outputs_dir / f"{model_name}_oof_predictions.csv"
+    scored_path = _outputs_dir / f"{model_name}_scored_rows.csv"
+    # latest_* artifacts are only written on the default output path so
+    # candidate runs don't overwrite the live-trader's reference files.
     latest_report_path = OUTPUTS_DIR / "latest_live_bootstrap_report.json"
     latest_scored_path = OUTPUTS_DIR / "latest_live_bootstrap_scored_rows.csv"
 
@@ -475,11 +499,13 @@ def train_bootstrap_model(
 
     scored_sorted = scored_matrix.sort_values(["game_date", "ticker", "captured_at"])
     scored_sorted.to_csv(scored_path, index=False)
-    scored_sorted.to_csv(latest_scored_path, index=False)
+    if _using_default_outputs:
+        scored_sorted.to_csv(latest_scored_path, index=False)
 
     report = {
         "model_name": model_name,
         "model_path": str(model_path),
+        "report_path": str(report_path),
         "target": target,
         "trained_at": trained_at,
         "metadata": metadata,
@@ -494,7 +520,8 @@ def train_bootstrap_model(
         "scored_rows_path": str(scored_path),
     }
     report_path.write_text(json.dumps(report, indent=2, default=str))
-    latest_report_path.write_text(json.dumps(report, indent=2, default=str))
+    if _using_default_outputs:
+        latest_report_path.write_text(json.dumps(report, indent=2, default=str))
 
     return report
 
@@ -532,6 +559,27 @@ def main():
         default=DEFAULT_MODEL_NAME,
         help="Artifact name prefix under models/ and outputs/.",
     )
+    parser.add_argument(
+        "--models-dir",
+        type=str,
+        default=None,
+        help=(
+            "Override the directory where the .pkl artifact is written. "
+            "Default: models/ (from config.MODELS_DIR). "
+            "Use models/candidates/ for non-destructive candidate runs."
+        ),
+    )
+    parser.add_argument(
+        "--outputs-dir",
+        type=str,
+        default=None,
+        help=(
+            "Override the directory where report/OOF/scored-rows are written. "
+            "Default: outputs/ (from config.OUTPUTS_DIR). "
+            "Use outputs/candidates/ for non-destructive candidate runs. "
+            "latest_* files are only written when this is the default path."
+        ),
+    )
     args = parser.parse_args()
 
     try:
@@ -544,6 +592,8 @@ def main():
             require_game_state=args.require_game_state,
             live_only=args.live_only,
             model_name=args.model_name,
+            models_dir=Path(args.models_dir) if args.models_dir else None,
+            outputs_dir=Path(args.outputs_dir) if args.outputs_dir else None,
         )
     except ValueError as exc:
         print(f"  ERROR: {exc}")
@@ -561,7 +611,7 @@ def main():
     print(f"  Baseline Brier:        {report['baseline_metrics']['brier']}")
     print(f"  Top-70% lift:          {report['lift_table'][0]['lift_vs_base']}")
     print(f"  Model saved:           {report['model_path']}")
-    print(f"  Report saved:          {OUTPUTS_DIR / f'{args.model_name}_report.json'}")
+    print(f"  Report saved:          {report.get('report_path', report['scored_rows_path'])}")
     print(f"  Scored rows saved:     {report['scored_rows_path']}")
 
 
