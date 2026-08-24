@@ -20,6 +20,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import sklearn
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
@@ -439,6 +440,10 @@ def train_bootstrap_model(
         "feature_cols": feature_cols,
         "target": target,
         "trained_at": trained_at,
+        # sklearn_version is stamped here so load_model() can verify that the
+        # runtime sklearn matches the version used at pickle time. Mismatches
+        # cause silent predict() failures (see paper_trader/scorer.py).
+        "sklearn_version": sklearn.__version__,
         "metadata": metadata,
         "calibration": calibration,
         "oof_metrics_raw": oof_metrics_raw,

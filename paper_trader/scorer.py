@@ -5,12 +5,14 @@ imported here, NOT reimplemented, so training and live can never drift.
 """
 from __future__ import annotations
 
+import logging
 import pickle
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
+import sklearn
 
 # Re-use training-time helpers verbatim. If these symbols move, update the
 # import — don't recreate the formulas.
@@ -18,6 +20,8 @@ from live_training_matrix import _safe_numeric, _status_flag
 
 
 REGULATION_SECONDS = 48 * 60
+
+logger = logging.getLogger(__name__)
 
 
 def load_model(path: Path) -> dict[str, Any]:
@@ -27,6 +31,38 @@ def load_model(path: Path) -> dict[str, Any]:
     missing = required - bundle.keys()
     if missing:
         raise ValueError(f"model bundle missing keys: {missing}")
+
+    # ------------------------------------------------------------------
+    # sklearn version guard — fail loud instead of silently broken trader
+    # ------------------------------------------------------------------
+    # When the venv's sklearn drifts past the version that pickled this
+    # bundle, sklearn emits InconsistentVersionWarning at load time and
+    # every predict() raises AttributeError('SimpleImputer' object has no
+    # attribute '_fill_dtype'). The paper trader catches those as
+    # event_type=error events and keeps ticking — the loop looks healthy
+    # while no trade is ever placed. Raising here surfaces the skew clearly
+    # so the operator knows to retrain: python live_bootstrap_model.py
+    # ------------------------------------------------------------------
+    bundle_version = bundle.get("sklearn_version")
+    runtime_version = sklearn.__version__
+
+    if bundle_version is None:
+        logger.warning(
+            "sklearn_version key absent from model bundle at %s — bundle was "
+            "pickled before version-tagging was added. Runtime sklearn is %s. "
+            "If predict() errors appear, retrain via: python live_bootstrap_model.py",
+            path,
+            runtime_version,
+        )
+    elif bundle_version != runtime_version:
+        raise RuntimeError(
+            f"sklearn version mismatch: model bundle at '{path}' was pickled "
+            f"with sklearn {bundle_version}, but the runtime has sklearn "
+            f"{runtime_version}. This causes silent predict() failures "
+            f"(AttributeError on SimpleImputer._fill_dtype). "
+            f"Retrain the model: python live_bootstrap_model.py"
+        )
+
     return bundle
 
 
