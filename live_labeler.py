@@ -88,6 +88,42 @@ def resolve_final_game_outcomes(game_history: pd.DataFrame) -> pd.DataFrame:
     ]
 
 
+def resolve_halftime_leaders(game_history: pd.DataFrame) -> pd.DataFrame:
+    """Per game, who leads at the end of Q2 (last observed period==2 tick).
+
+    Returns game_key + label_halftime_home_lead (1 home / 0 away / NA on a
+    halftime tie), label_halftime_margin_home, label_halftime_is_tie. Games
+    with no period==2 capture are dropped (cannot be labeled).
+    """
+    cols = [
+        "game_key",
+        "label_halftime_home_lead",
+        "label_halftime_margin_home",
+        "label_halftime_is_tie",
+    ]
+    if game_history.empty:
+        return pd.DataFrame(columns=cols)
+
+    hist = game_history.copy()
+    hist["captured_at"] = _as_timestamp(hist["captured_at"])
+    hist["period"] = pd.to_numeric(hist["period"], errors="coerce")
+    q2 = hist[hist["period"] == 2]
+    if q2.empty:
+        return pd.DataFrame(columns=cols)
+
+    last_q2 = (
+        q2.sort_values(["game_key", "captured_at"])
+        .groupby("game_key", as_index=False)
+        .last()
+    )
+    margin = last_q2["home_score"] - last_q2["away_score"]
+    last_q2["label_halftime_margin_home"] = margin
+    last_q2["label_halftime_is_tie"] = (margin == 0).astype(int)
+    last_q2["label_halftime_home_lead"] = _nullable_binary(margin > 0)
+    last_q2.loc[margin == 0, "label_halftime_home_lead"] = pd.NA
+    return last_q2[cols]
+
+
 def resolve_close_proxies(market_history: pd.DataFrame) -> pd.DataFrame:
     """
     Resolve a close proxy per ticker from the last observed tradable market snapshot.
