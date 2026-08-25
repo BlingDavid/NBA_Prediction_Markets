@@ -256,6 +256,8 @@ def build_in_game_training_matrix(
         "label_beats_close_yes",
         "label_beats_close_home",
         "label_final_home_win",
+        "label_halftime_home_lead",
+        "label_halftime_margin_home",
     ]
     df = _safe_numeric(df, numeric_cols)
 
@@ -348,6 +350,13 @@ def build_in_game_training_matrix(
         "pace_delta",
     ]
 
+    # Halftime labels are optional — earlier pipeline stages may not have
+    # computed them yet.  Ensure the columns exist so matrix_cols selection
+    # always succeeds.
+    for _col in ("label_halftime_home_lead", "label_halftime_margin_home"):
+        if _col not in df.columns:
+            df[_col] = float("nan")
+
     matrix_cols = [
         "ticker",
         "event_ticker",
@@ -367,6 +376,8 @@ def build_in_game_training_matrix(
         "label_home_up_5m",
         "label_beats_close_yes",
         "label_beats_close_home",
+        "label_halftime_home_lead",
+        "label_halftime_margin_home",
     ]
 
     matrix = df[matrix_cols].copy()
