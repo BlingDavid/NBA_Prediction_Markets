@@ -218,10 +218,42 @@ def get_decile_expected_moves(
 # Live-feature file loading
 # ═══════════════════════════════════════════════════════════════════════════
 
-def _available_feature_files(features_dir: Path) -> list[Path]:
-    """Return paths to all live_features_*.csv, excluding known-corrupt files."""
+def _available_feature_files(
+    features_dir: Path,
+    dates_from: str | None = None,
+    dates_to: str | None = None,
+) -> list[Path]:
+    """Return paths to live_features_*.csv within an optional date range.
+
+    Parameters
+    ----------
+    features_dir : Path
+        Directory containing ``live_features_<date>.csv`` files.
+    dates_from : str or None
+        ISO date string (e.g. ``"2026-04-29"``).  Files whose embedded date
+        is strictly BEFORE this value are excluded.  Default: no lower bound.
+    dates_to : str or None
+        ISO date string (e.g. ``"2026-05-08"``).  Files whose embedded date
+        is strictly AFTER this value are excluded.  Default: no upper bound.
+
+    Returns
+    -------
+    list[Path]
+        Sorted list of included (non-corrupt) paths.
+    """
     paths = sorted(features_dir.glob("live_features_*.csv"))
-    return [p for p in paths if p.name not in _CORRUPT_FILES]
+    result = []
+    for p in paths:
+        if p.name in _CORRUPT_FILES:
+            continue
+        # Extract date portion from filename: live_features_YYYY-MM-DD.csv
+        date_str = p.stem.replace("live_features_", "")
+        if dates_from is not None and date_str < dates_from:
+            continue
+        if dates_to is not None and date_str > dates_to:
+            continue
+        result.append(p)
+    return result
 
 
 def _load_live_rows(path: Path) -> pd.DataFrame | None:
@@ -402,8 +434,19 @@ def run_replay(
     output_dir: Path | None = None,
     half_spread_scenarios: list[float] = HALF_SPREAD_SCENARIOS,
     verbose: bool = True,
+    dates_from: str | None = None,
+    dates_to: str | None = None,
 ) -> dict[str, Any]:
     """Run the full net-of-cost replay.
+
+    Parameters
+    ----------
+    dates_from : str or None
+        ISO date string (e.g. ``"2026-04-29"``).  Only feature files on or
+        after this date are included.  Default: no lower bound (all dates).
+    dates_to : str or None
+        ISO date string (e.g. ``"2026-05-08"``).  Only feature files on or
+        before this date are included.  Default: no upper bound (all dates).
 
     Returns a dict keyed by half_spread scenario with aggregate stats,
     plus a 'raw_trades' key with all trade dicts (for downstream analysis).
@@ -429,8 +472,11 @@ def run_replay(
     print(f"    Decile entries: {len(em_data['decile_table'])}")
 
     # ── Discover feature files ──────────────────────────────────────────
-    feature_files = _available_feature_files(features_dir)
-    print(f"\n[3] Feature files found: {len(feature_files)} (excluding {len(_CORRUPT_FILES)} corrupt)")
+    feature_files = _available_feature_files(features_dir, dates_from=dates_from, dates_to=dates_to)
+    date_range_note = ""
+    if dates_from or dates_to:
+        date_range_note = f" [dates_from={dates_from or 'any'}, dates_to={dates_to or 'any'}]"
+    print(f"\n[3] Feature files found: {len(feature_files)} (excluding {len(_CORRUPT_FILES)} corrupt){date_range_note}")
 
     # ── Run per-scenario simulation ─────────────────────────────────────
     print(f"\n[4] Simulating trades (one pass per half-spread scenario)...")
@@ -822,11 +868,48 @@ if __name__ == "__main__":
         help="Directory for outputs (default: outputs/)",
     )
     ap.add_argument(
+        "--model-path",
+        type=Path,
+        default=MODEL_PATH,
+        help="Path to the model .pkl artifact (default: models/live_home_up_5m_bootstrap.pkl).",
+    )
+    ap.add_argument(
+        "--pooled-means-path",
+        type=Path,
+        default=POOLED_MEANS_PATH,
+        help="Path to pooled_means.json (default: outputs/paper_trades/pooled_means.json).",
+    )
+    ap.add_argument(
+        "--dates-from",
+        type=str,
+        default=None,
+        help=(
+            "ISO date string (e.g. '2026-04-29').  Only feature files on or "
+            "after this date are included.  Use to restrict to the test hold-out window."
+        ),
+    )
+    ap.add_argument(
+        "--dates-to",
+        type=str,
+        default=None,
+        help=(
+            "ISO date string (e.g. '2026-05-08').  Only feature files on or "
+            "before this date are included."
+        ),
+    )
+    ap.add_argument(
         "--quiet",
         action="store_true",
         help="Suppress per-file progress output",
     )
     args = ap.parse_args()
 
-    run_replay(output_dir=args.output_dir, verbose=not args.quiet)
+    run_replay(
+        output_dir=args.output_dir,
+        model_path=args.model_path,
+        pooled_means_path=args.pooled_means_path,
+        dates_from=args.dates_from,
+        dates_to=args.dates_to,
+        verbose=not args.quiet,
+    )
     print("\nDone.")

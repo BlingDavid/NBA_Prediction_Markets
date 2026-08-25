@@ -250,6 +250,37 @@ def _top_coefficients(model: Pipeline, feature_cols: list[str], top_n: int = 15)
     return rows[:top_n]
 
 
+def filter_matrix_by_cutoff(
+    matrix: pd.DataFrame,
+    train_cutoff_date: str | None,
+) -> pd.DataFrame:
+    """Drop rows at or after *train_cutoff_date* (exclusive upper bound).
+
+    Parameters
+    ----------
+    matrix : pd.DataFrame
+        Must already have a timezone-aware ``captured_at`` column (datetime64[ns, UTC]).
+    train_cutoff_date : str or None
+        ISO date string, e.g. ``"2026-04-29"``.  If None, the matrix is
+        returned unchanged — preserving backward-compatible default behaviour.
+
+    Returns
+    -------
+    pd.DataFrame
+        Filtered copy (or the original if cutoff is None).
+
+    Notes
+    -----
+    Only ``captured_at`` is used for filtering.  Rows where ``captured_at``
+    is NaT are retained (they could not be confirmed to be out-of-range).
+    """
+    if train_cutoff_date is None:
+        return matrix
+    cutoff = pd.Timestamp(train_cutoff_date, tz="UTC")
+    mask = matrix["captured_at"].isna() | (matrix["captured_at"] < cutoff)
+    return matrix[mask].copy()
+
+
 def build_bootstrap_dataset(
     target: str = DEFAULT_TARGET,
     horizon_minutes: int = 5,
@@ -258,6 +289,7 @@ def build_bootstrap_dataset(
     only_home_side: bool = True,
     require_game_state: bool = False,
     live_only: bool = False,
+    train_cutoff_date: str | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, list[str], dict]:
     labeled = build_labeled_training_set(
         horizon_minutes=horizon_minutes,
@@ -281,6 +313,11 @@ def build_bootstrap_dataset(
     if live_only and "flag_status_live" in matrix.columns:
         matrix = matrix[matrix["flag_status_live"] == 1].copy()
 
+    # Temporal hold-out: restrict BOTH the scored matrix and the labeled rows
+    # to captured_at < train_cutoff_date.  This enforces a clean train/test
+    # split without touching the deployed model or its outputs.
+    matrix = filter_matrix_by_cutoff(matrix, train_cutoff_date)
+
     labeled_rows = matrix[matrix[target].notna()].copy()
     if labeled_rows.empty:
         return matrix, labeled_rows, [], {}
@@ -300,6 +337,7 @@ def build_bootstrap_dataset(
         "only_home_side": only_home_side,
         "require_game_state": require_game_state,
         "live_only": live_only,
+        "train_cutoff_date": train_cutoff_date,
         "all_matrix_rows": int(len(matrix)),
         "labeled_rows": int(len(labeled_rows)),
         "groups": int(labeled_rows["group_id"].nunique()),
@@ -317,6 +355,7 @@ def train_bootstrap_model(
     only_home_side: bool = True,
     require_game_state: bool = False,
     live_only: bool = False,
+    train_cutoff_date: str | None = None,
     model_name: str = DEFAULT_MODEL_NAME,
     models_dir: Path | None = None,
     outputs_dir: Path | None = None,
@@ -343,6 +382,7 @@ def train_bootstrap_model(
         only_home_side=only_home_side,
         require_game_state=require_game_state,
         live_only=live_only,
+        train_cutoff_date=train_cutoff_date,
     )
 
     if labeled_rows.empty:
@@ -554,6 +594,17 @@ def main():
         help="Keep only rows where ESPN status_state is live (`in`).",
     )
     parser.add_argument(
+        "--train-cutoff-date",
+        type=str,
+        default=None,
+        help=(
+            "ISO date string (e.g. '2026-04-29').  Only rows with "
+            "captured_at BEFORE this date are used for training and scoring. "
+            "Use to enforce a temporal hold-out (train on earlier dates, "
+            "evaluate on later dates).  Default: None (use all rows)."
+        ),
+    )
+    parser.add_argument(
         "--model-name",
         type=str,
         default=DEFAULT_MODEL_NAME,
@@ -591,6 +642,7 @@ def main():
             only_home_side=not args.all_sides,
             require_game_state=args.require_game_state,
             live_only=args.live_only,
+            train_cutoff_date=args.train_cutoff_date,
             model_name=args.model_name,
             models_dir=Path(args.models_dir) if args.models_dir else None,
             outputs_dir=Path(args.outputs_dir) if args.outputs_dir else None,
