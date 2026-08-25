@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 
 import numpy as np
+import pandas as pd
 
 
 def current_leader_prob(margin: float, k: float = 0.15) -> float:
@@ -27,3 +28,26 @@ def diffusion_prob(margin: float, seconds_left_in_half: float,
         return 1.0 if margin > 0 else (0.0 if margin < 0 else 0.5)
     z = float(margin) / sigma
     return 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
+
+
+def lead_time_curve(df: pd.DataFrame, bin_minutes: int = 2) -> pd.DataFrame:
+    """Per game-time bin, compare model vs baseline Brier / accuracy.
+
+    df needs columns: minutes_elapsed, y_true, model_prob, baseline_prob.
+    Returns one row per bin with n, model_brier, baseline_brier,
+    model_acc, baseline_acc.
+    """
+    d = df.dropna(subset=["y_true", "model_prob", "baseline_prob"]).copy()
+    d["minute_bin"] = (d["minutes_elapsed"] // bin_minutes) * bin_minutes
+    rows = []
+    for b, g in d.groupby("minute_bin"):
+        yt = g["y_true"].to_numpy(dtype=float)
+        rows.append({
+            "minute_bin": int(b),
+            "n": int(len(g)),
+            "model_brier": float(np.mean((g["model_prob"].to_numpy() - yt) ** 2)),
+            "baseline_brier": float(np.mean((g["baseline_prob"].to_numpy() - yt) ** 2)),
+            "model_acc": float(np.mean((g["model_prob"].to_numpy() >= 0.5) == (yt == 1))),
+            "baseline_acc": float(np.mean((g["baseline_prob"].to_numpy() >= 0.5) == (yt == 1))),
+        })
+    return pd.DataFrame(rows).sort_values("minute_bin").reset_index(drop=True)
