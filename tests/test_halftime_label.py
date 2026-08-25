@@ -1,6 +1,6 @@
 import pandas as pd
 import pytest
-from live_labeler import resolve_halftime_leaders
+from live_labeler import resolve_halftime_leaders, build_labeled_training_set
 
 
 def _game_history():
@@ -32,3 +32,34 @@ def test_game_without_q2_rows_is_dropped():
     ])
     out = resolve_halftime_leaders(hist)
     assert "D" not in set(out["game_key"])
+
+
+def test_labeled_set_carries_halftime_label():
+    """
+    build_labeled_training_set must join halftime labels into the output frame.
+
+    Uses real 2026-04-17 data slices (nrows=200) because constructing fully
+    valid synthetic frames for the complex forward-market / close-proxy merges
+    in build_labeled_training_set is brittle. The 2026-04-17 game file
+    contains period-2 rows for 2026-04-17_GSW_PHX, guaranteeing at least one
+    resolved halftime label.
+    """
+    BASE = "data/live"
+    features = pd.read_csv(f"{BASE}/features/live_features_2026-04-17.csv", nrows=200)
+    games = pd.read_csv(f"{BASE}/games/game_states_2026-04-17.csv")
+    markets = pd.read_csv(f"{BASE}/markets/market_snapshots_2026-04-17.csv", nrows=200)
+
+    result = build_labeled_training_set(
+        feature_history=features,
+        game_history=games,
+        market_history=markets,
+    )
+
+    assert not result.empty, "build_labeled_training_set returned empty DataFrame"
+    assert "label_halftime_home_lead" in result.columns, (
+        "label_halftime_home_lead column missing from labeled training set"
+    )
+    # At least one row should have a non-null halftime label (GSW_PHX had period-2 rows)
+    assert result["label_halftime_home_lead"].notna().any(), (
+        "label_halftime_home_lead is null for every row — halftime merge did not attach any labels"
+    )

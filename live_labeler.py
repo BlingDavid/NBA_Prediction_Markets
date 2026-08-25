@@ -349,6 +349,8 @@ def build_labeled_training_set(
     close_proxy = resolve_close_proxies(markets)
 
     labeled = features.merge(final_outcomes, on="game_key", how="left")
+    halftime_outcomes = resolve_halftime_leaders(games)
+    labeled = labeled.merge(halftime_outcomes, on="game_key", how="left")
     labeled = attach_forward_market_labels(
         labeled,
         horizon_minutes=horizon_minutes,
