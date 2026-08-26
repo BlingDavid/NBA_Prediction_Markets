@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NBA Model — Today's Picks</title>
+  {% if state.running %}<meta http-equiv="refresh" content="4">{% endif %}
+  <style>
+    :root { --big:#1b8a3a; --mid:#b8860b; --thin:#777; }
+    * { box-sizing: border-box; }
+    body { font-family: -apple-system, Helvetica, Arial, sans-serif; margin: 0;
+           background: #f5f6f8; color: #1a1a1a; }
+    .banner { background: #fff3cd; color: #664d03; padding: 10px 18px;
+              font-size: 14px; border-bottom: 1px solid #e6d38a; }
+    .wrap { max-width: 920px; margin: 0 auto; padding: 24px 18px 60px; }
+    h1 { font-size: 26px; margin: 18px 0 6px; }
+    .meta { color: #666; font-size: 13px; margin: 4px 0; }
+    button { font-size: 17px; font-weight: 600; padding: 12px 22px; border: 0;
+             border-radius: 10px; background: #1050e0; color: #fff; cursor: pointer; }
+    button:disabled { background: #9aa7c7; cursor: default; }
+    .spinner { display:inline-block; margin-left:10px; color:#1050e0; font-size:14px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 18px;
+            background: #fff; border-radius: 12px; overflow: hidden;
+            box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+    th, td { text-align: left; padding: 11px 14px; border-bottom: 1px solid #eee; }
+    th { background: #fafafa; font-size: 12px; text-transform: uppercase;
+         letter-spacing: .04em; color: #666; }
+    td.edge { font-weight: 700; font-variant-numeric: tabular-nums; }
+    tr.big  td.edge { color: var(--big); }
+    tr.mid  td.edge { color: var(--mid); }
+    tr.thin td.edge { color: var(--thin); }
+    tr.big  { background: #f2fbf4; }
+    td.num { font-variant-numeric: tabular-nums; }
+    pre.err { background:#2b2b2b; color:#f88; padding:12px; border-radius:8px;
+              font-size:12px; overflow:auto; }
+    .empty { color:#666; margin-top: 24px; }
+    .legend { font-size:12px; color:#666; margin-top:10px; }
+    .dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin:0 4px 0 12px; vertical-align:middle; }
+  </style>
+</head>
+<body>
+  <div class="banner">⚠️ Pre-game screen — <b>paper-trade first</b>. The live in-game strategies are proven NO-GO (they lose to fees). This finds <i>candidate</i> edges, not sure things.</div>
+  <div class="wrap">
+    <h1>🏀 Today's Picks</h1>
+
+    <form method="post" action="/run">
+      <button {% if state.running %}disabled{% endif %}>
+        {% if state.running %}Running…{% else %}Run today's picks{% endif %}
+      </button>
+      {% if state.running %}<span class="spinner">crunching games — this page refreshes itself…</span>{% endif %}
+    </form>
+
+    {% if updated %}<p class="meta">Bet card last updated: <b>{{ updated }}</b></p>{% endif %}
+    {% if state.finished and state.returncode is not none and not state.running %}
+      <p class="meta">Last run finished {{ state.finished }} · exit code {{ state.returncode }}
+         {% if state.returncode == 0 %}✅{% else %}⚠️ (see log below){% endif %}</p>
+      {% if state.returncode != 0 %}<pre class="err">{{ state.log_tail }}</pre>{% endif %}
+    {% endif %}
+
+    {% if rows %}
+    <table>
+      <thead>
+        <tr><th>Game</th><th>Pick</th><th>Edge</th><th>Model</th><th>Market</th><th>Suggested $</th></tr>
+      </thead>
+      <tbody>
+        {% for r in rows %}
+        <tr class="{{ r.cls }}">
+          <td>{{ r.game }}</td>
+          <td><b>{{ r.pick }}</b></td>
+          <td class="edge">{{ r.edge_pct }}</td>
+          <td class="num">{{ r.model_pct }}</td>
+          <td class="num">{{ r.market_pct }}</td>
+          <td class="num">{{ r.size }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <div class="legend">
+      <span class="dot" style="background:var(--big)"></span>big edge (≥6%)
+      <span class="dot" style="background:var(--mid)"></span>medium (3–6%)
+      <span class="dot" style="background:var(--thin)"></span>thin (&lt;3%, fees may eat it)
+    </div>
+    {% else %}
+      <p class="empty">No bet card yet — click <b>Run today's picks</b> to generate one.</p>
+    {% endif %}
+  </div>
+</body>
+</html>
