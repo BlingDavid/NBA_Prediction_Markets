@@ -281,6 +281,58 @@ def filter_matrix_by_cutoff(
     return matrix[mask].copy()
 
 
+def filter_first_half(matrix: pd.DataFrame, enabled: bool = True) -> pd.DataFrame:
+    """Restrict to first-half ticks (period in {1, 2})."""
+    if not enabled or "period" not in matrix.columns:
+        return matrix
+    period = pd.to_numeric(matrix["period"], errors="coerce")
+    return matrix[period.isin([1, 2])].copy()
+
+
+_MARKET_SUBSTRINGS: tuple[str, ...] = (
+    "volume",
+    "open_interest",
+    "depth",
+    "pressure",
+    "weighted_price",
+    "bid",
+    "ask",
+    "mid",
+    "implied",
+    "last_price",
+    "market_",
+    "espn_",
+    "consensus",
+    "oddsapi",
+    "yes_",
+    "no_",
+)
+
+
+def filter_game_state_features(feature_cols: list[str]) -> list[str]:
+    """Return only features that are NOT market/microstructure features.
+
+    Any feature whose name contains one of the market-microstructure substrings
+    is dropped.  Everything else (period, seconds_*, score_margin_home,
+    total_points, pregame_*, momentum/pace/velocity flags, etc.) is kept.
+
+    Parameters
+    ----------
+    feature_cols : list[str]
+        Candidate feature column names.
+
+    Returns
+    -------
+    list[str]
+        Subset of *feature_cols* with market features removed, preserving order.
+    """
+    return [
+        col
+        for col in feature_cols
+        if not any(substr in col for substr in _MARKET_SUBSTRINGS)
+    ]
+
+
 def build_bootstrap_dataset(
     target: str = DEFAULT_TARGET,
     horizon_minutes: int = 5,
@@ -290,6 +342,8 @@ def build_bootstrap_dataset(
     require_game_state: bool = False,
     live_only: bool = False,
     train_cutoff_date: str | None = None,
+    first_half_only: bool = False,
+    game_state_only: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame, list[str], dict]:
     labeled = build_labeled_training_set(
         horizon_minutes=horizon_minutes,
@@ -317,12 +371,15 @@ def build_bootstrap_dataset(
     # to captured_at < train_cutoff_date.  This enforces a clean train/test
     # split without touching the deployed model or its outputs.
     matrix = filter_matrix_by_cutoff(matrix, train_cutoff_date)
+    matrix = filter_first_half(matrix, enabled=first_half_only)
 
     labeled_rows = matrix[matrix[target].notna()].copy()
     if labeled_rows.empty:
         return matrix, labeled_rows, [], {}
 
     selected_features, dropped_features = _select_feature_columns(labeled_rows, feature_cols)
+    if game_state_only:
+        selected_features = filter_game_state_features(selected_features)
     if not selected_features:
         raise ValueError("No usable feature columns remain after filtering missing/constant columns.")
 
@@ -338,6 +395,8 @@ def build_bootstrap_dataset(
         "require_game_state": require_game_state,
         "live_only": live_only,
         "train_cutoff_date": train_cutoff_date,
+        "first_half_only": first_half_only,
+        "game_state_only": game_state_only,
         "all_matrix_rows": int(len(matrix)),
         "labeled_rows": int(len(labeled_rows)),
         "groups": int(labeled_rows["group_id"].nunique()),
@@ -356,6 +415,8 @@ def train_bootstrap_model(
     require_game_state: bool = False,
     live_only: bool = False,
     train_cutoff_date: str | None = None,
+    first_half_only: bool = False,
+    game_state_only: bool = False,
     model_name: str = DEFAULT_MODEL_NAME,
     models_dir: Path | None = None,
     outputs_dir: Path | None = None,
@@ -383,6 +444,8 @@ def train_bootstrap_model(
         require_game_state=require_game_state,
         live_only=live_only,
         train_cutoff_date=train_cutoff_date,
+        first_half_only=first_half_only,
+        game_state_only=game_state_only,
     )
 
     if labeled_rows.empty:
@@ -604,6 +667,18 @@ def main():
             "evaluate on later dates).  Default: None (use all rows)."
         ),
     )
+    parser.add_argument("--first-half-only", action="store_true",
+                        help="Train only on first-half ticks (period 1-2).")
+    parser.add_argument(
+        "--game-state-only",
+        action="store_true",
+        help=(
+            "Drop all market/microstructure features (volume, open_interest, "
+            "bid/ask, mid, implied, depth, pressure, weighted_price, last_price, "
+            "market_*, espn_*, consensus, oddsapi, yes_*, no_*) and train only "
+            "on game-state signals (score margin, time, pregame priors, momentum)."
+        ),
+    )
     parser.add_argument(
         "--model-name",
         type=str,
@@ -643,6 +718,8 @@ def main():
             require_game_state=args.require_game_state,
             live_only=args.live_only,
             train_cutoff_date=args.train_cutoff_date,
+            first_half_only=args.first_half_only,
+            game_state_only=args.game_state_only,
             model_name=args.model_name,
             models_dir=Path(args.models_dir) if args.models_dir else None,
             outputs_dir=Path(args.outputs_dir) if args.outputs_dir else None,
