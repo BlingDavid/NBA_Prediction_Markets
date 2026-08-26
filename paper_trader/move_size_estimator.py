@@ -27,10 +27,13 @@ class Store:
 
 def load_pooled_means(path: Path) -> Store:
     payload = json.loads(Path(path).read_text())
+    decile_rows = payload.get("decile_table")
+    decile_table = pd.DataFrame(decile_rows) if decile_rows else None
     return Store(
         E_rises_pooled=float(payload["E_delta_given_rises"]),
         E_doesnt_pooled=float(payload["E_delta_given_doesnt"]),
         var_pooled=float(payload["var_delta_pooled"]),
+        decile_table=decile_table,
     )
 
 

@@ -107,6 +107,7 @@ class TestBuildInGameTrainingMatrix:
             "no_depth_notional_3": 1.0, "no_depth_notional_5": 1.0,
             "yes_weighted_price_3": 0.51, "no_weighted_price_3": 0.49,
             "espn_home_implied": 0.52, "espn_away_implied": 0.48,
+            "oddsapi_home_consensus": 0.51, "oddsapi_away_consensus": 0.49, "oddsapi_books": 5,
             "market_consensus_home": 0.51,
             "pregame_home_win_prob": 0.55, "pregame_away_win_prob": 0.45,
             "pregame_spread": -1.0, "pregame_total": 220,

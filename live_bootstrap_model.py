@@ -20,6 +20,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import sklearn
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
@@ -249,6 +250,89 @@ def _top_coefficients(model: Pipeline, feature_cols: list[str], top_n: int = 15)
     return rows[:top_n]
 
 
+def filter_matrix_by_cutoff(
+    matrix: pd.DataFrame,
+    train_cutoff_date: str | None,
+) -> pd.DataFrame:
+    """Drop rows at or after *train_cutoff_date* (exclusive upper bound).
+
+    Parameters
+    ----------
+    matrix : pd.DataFrame
+        Must already have a timezone-aware ``captured_at`` column (datetime64[ns, UTC]).
+    train_cutoff_date : str or None
+        ISO date string, e.g. ``"2026-04-29"``.  If None, the matrix is
+        returned unchanged — preserving backward-compatible default behaviour.
+
+    Returns
+    -------
+    pd.DataFrame
+        Filtered copy (or the original if cutoff is None).
+
+    Notes
+    -----
+    Only ``captured_at`` is used for filtering.  Rows where ``captured_at``
+    is NaT are retained (they could not be confirmed to be out-of-range).
+    """
+    if train_cutoff_date is None:
+        return matrix
+    cutoff = pd.Timestamp(train_cutoff_date, tz="UTC")
+    mask = matrix["captured_at"].isna() | (matrix["captured_at"] < cutoff)
+    return matrix[mask].copy()
+
+
+def filter_first_half(matrix: pd.DataFrame, enabled: bool = True) -> pd.DataFrame:
+    """Restrict to first-half ticks (period in {1, 2})."""
+    if not enabled or "period" not in matrix.columns:
+        return matrix
+    period = pd.to_numeric(matrix["period"], errors="coerce")
+    return matrix[period.isin([1, 2])].copy()
+
+
+_MARKET_SUBSTRINGS: tuple[str, ...] = (
+    "volume",
+    "open_interest",
+    "depth",
+    "pressure",
+    "weighted_price",
+    "bid",
+    "ask",
+    "mid",
+    "implied",
+    "last_price",
+    "market_",
+    "espn_",
+    "consensus",
+    "oddsapi",
+    "yes_",
+    "no_",
+)
+
+
+def filter_game_state_features(feature_cols: list[str]) -> list[str]:
+    """Return only features that are NOT market/microstructure features.
+
+    Any feature whose name contains one of the market-microstructure substrings
+    is dropped.  Everything else (period, seconds_*, score_margin_home,
+    total_points, pregame_*, momentum/pace/velocity flags, etc.) is kept.
+
+    Parameters
+    ----------
+    feature_cols : list[str]
+        Candidate feature column names.
+
+    Returns
+    -------
+    list[str]
+        Subset of *feature_cols* with market features removed, preserving order.
+    """
+    return [
+        col
+        for col in feature_cols
+        if not any(substr in col for substr in _MARKET_SUBSTRINGS)
+    ]
+
+
 def build_bootstrap_dataset(
     target: str = DEFAULT_TARGET,
     horizon_minutes: int = 5,
@@ -257,6 +341,9 @@ def build_bootstrap_dataset(
     only_home_side: bool = True,
     require_game_state: bool = False,
     live_only: bool = False,
+    train_cutoff_date: str | None = None,
+    first_half_only: bool = False,
+    game_state_only: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame, list[str], dict]:
     labeled = build_labeled_training_set(
         horizon_minutes=horizon_minutes,
@@ -280,11 +367,19 @@ def build_bootstrap_dataset(
     if live_only and "flag_status_live" in matrix.columns:
         matrix = matrix[matrix["flag_status_live"] == 1].copy()
 
+    # Temporal hold-out: restrict BOTH the scored matrix and the labeled rows
+    # to captured_at < train_cutoff_date.  This enforces a clean train/test
+    # split without touching the deployed model or its outputs.
+    matrix = filter_matrix_by_cutoff(matrix, train_cutoff_date)
+    matrix = filter_first_half(matrix, enabled=first_half_only)
+
     labeled_rows = matrix[matrix[target].notna()].copy()
     if labeled_rows.empty:
         return matrix, labeled_rows, [], {}
 
     selected_features, dropped_features = _select_feature_columns(labeled_rows, feature_cols)
+    if game_state_only:
+        selected_features = filter_game_state_features(selected_features)
     if not selected_features:
         raise ValueError("No usable feature columns remain after filtering missing/constant columns.")
 
@@ -299,6 +394,9 @@ def build_bootstrap_dataset(
         "only_home_side": only_home_side,
         "require_game_state": require_game_state,
         "live_only": live_only,
+        "train_cutoff_date": train_cutoff_date,
+        "first_half_only": first_half_only,
+        "game_state_only": game_state_only,
         "all_matrix_rows": int(len(matrix)),
         "labeled_rows": int(len(labeled_rows)),
         "groups": int(labeled_rows["group_id"].nunique()),
@@ -316,8 +414,27 @@ def train_bootstrap_model(
     only_home_side: bool = True,
     require_game_state: bool = False,
     live_only: bool = False,
+    train_cutoff_date: str | None = None,
+    first_half_only: bool = False,
+    game_state_only: bool = False,
     model_name: str = DEFAULT_MODEL_NAME,
+    models_dir: Path | None = None,
+    outputs_dir: Path | None = None,
 ) -> dict:
+    """Train and persist a bootstrap in-game model.
+
+    Parameters
+    ----------
+    models_dir : Path or None
+        Directory to write the .pkl artifact. Defaults to MODELS_DIR from config.
+        Pass an alternative (e.g. ``models/candidates/``) to avoid overwriting
+        the deployed model.
+    outputs_dir : Path or None
+        Directory to write report, OOF predictions, and scored-rows CSV.
+        Defaults to OUTPUTS_DIR from config. ``latest_*`` symlink artifacts are
+        only written when outputs_dir is None (i.e. the default path), so
+        candidate runs do not pollute the live-trader's outputs.
+    """
     matrix, labeled_rows, feature_cols, metadata = build_bootstrap_dataset(
         target=target,
         horizon_minutes=horizon_minutes,
@@ -326,6 +443,9 @@ def train_bootstrap_model(
         only_home_side=only_home_side,
         require_game_state=require_game_state,
         live_only=live_only,
+        train_cutoff_date=train_cutoff_date,
+        first_half_only=first_half_only,
+        game_state_only=game_state_only,
     )
 
     if labeled_rows.empty:
@@ -427,10 +547,18 @@ def train_bootstrap_model(
         scored_matrix["target_available"] = scored_matrix[target].notna().astype(int)
 
     trained_at = datetime.now(timezone.utc).isoformat()
-    model_path = MODELS_DIR / f"{model_name}.pkl"
-    report_path = OUTPUTS_DIR / f"{model_name}_report.json"
-    oof_path = OUTPUTS_DIR / f"{model_name}_oof_predictions.csv"
-    scored_path = OUTPUTS_DIR / f"{model_name}_scored_rows.csv"
+    _models_dir = Path(models_dir) if models_dir is not None else MODELS_DIR
+    _outputs_dir = Path(outputs_dir) if outputs_dir is not None else OUTPUTS_DIR
+    _models_dir.mkdir(parents=True, exist_ok=True)
+    _outputs_dir.mkdir(parents=True, exist_ok=True)
+    _using_default_outputs = outputs_dir is None
+
+    model_path = _models_dir / f"{model_name}.pkl"
+    report_path = _outputs_dir / f"{model_name}_report.json"
+    oof_path = _outputs_dir / f"{model_name}_oof_predictions.csv"
+    scored_path = _outputs_dir / f"{model_name}_scored_rows.csv"
+    # latest_* artifacts are only written on the default output path so
+    # candidate runs don't overwrite the live-trader's reference files.
     latest_report_path = OUTPUTS_DIR / "latest_live_bootstrap_report.json"
     latest_scored_path = OUTPUTS_DIR / "latest_live_bootstrap_scored_rows.csv"
 
@@ -439,6 +567,10 @@ def train_bootstrap_model(
         "feature_cols": feature_cols,
         "target": target,
         "trained_at": trained_at,
+        # sklearn_version is stamped here so load_model() can verify that the
+        # runtime sklearn matches the version used at pickle time. Mismatches
+        # cause silent predict() failures (see paper_trader/scorer.py).
+        "sklearn_version": sklearn.__version__,
         "metadata": metadata,
         "calibration": calibration,
         "oof_metrics_raw": oof_metrics_raw,
@@ -470,11 +602,13 @@ def train_bootstrap_model(
 
     scored_sorted = scored_matrix.sort_values(["game_date", "ticker", "captured_at"])
     scored_sorted.to_csv(scored_path, index=False)
-    scored_sorted.to_csv(latest_scored_path, index=False)
+    if _using_default_outputs:
+        scored_sorted.to_csv(latest_scored_path, index=False)
 
     report = {
         "model_name": model_name,
         "model_path": str(model_path),
+        "report_path": str(report_path),
         "target": target,
         "trained_at": trained_at,
         "metadata": metadata,
@@ -489,7 +623,8 @@ def train_bootstrap_model(
         "scored_rows_path": str(scored_path),
     }
     report_path.write_text(json.dumps(report, indent=2, default=str))
-    latest_report_path.write_text(json.dumps(report, indent=2, default=str))
+    if _using_default_outputs:
+        latest_report_path.write_text(json.dumps(report, indent=2, default=str))
 
     return report
 
@@ -522,10 +657,54 @@ def main():
         help="Keep only rows where ESPN status_state is live (`in`).",
     )
     parser.add_argument(
+        "--train-cutoff-date",
+        type=str,
+        default=None,
+        help=(
+            "ISO date string (e.g. '2026-04-29').  Only rows with "
+            "captured_at BEFORE this date are used for training and scoring. "
+            "Use to enforce a temporal hold-out (train on earlier dates, "
+            "evaluate on later dates).  Default: None (use all rows)."
+        ),
+    )
+    parser.add_argument("--first-half-only", action="store_true",
+                        help="Train only on first-half ticks (period 1-2).")
+    parser.add_argument(
+        "--game-state-only",
+        action="store_true",
+        help=(
+            "Drop all market/microstructure features (volume, open_interest, "
+            "bid/ask, mid, implied, depth, pressure, weighted_price, last_price, "
+            "market_*, espn_*, consensus, oddsapi, yes_*, no_*) and train only "
+            "on game-state signals (score margin, time, pregame priors, momentum)."
+        ),
+    )
+    parser.add_argument(
         "--model-name",
         type=str,
         default=DEFAULT_MODEL_NAME,
         help="Artifact name prefix under models/ and outputs/.",
+    )
+    parser.add_argument(
+        "--models-dir",
+        type=str,
+        default=None,
+        help=(
+            "Override the directory where the .pkl artifact is written. "
+            "Default: models/ (from config.MODELS_DIR). "
+            "Use models/candidates/ for non-destructive candidate runs."
+        ),
+    )
+    parser.add_argument(
+        "--outputs-dir",
+        type=str,
+        default=None,
+        help=(
+            "Override the directory where report/OOF/scored-rows are written. "
+            "Default: outputs/ (from config.OUTPUTS_DIR). "
+            "Use outputs/candidates/ for non-destructive candidate runs. "
+            "latest_* files are only written when this is the default path."
+        ),
     )
     args = parser.parse_args()
 
@@ -538,7 +717,12 @@ def main():
             only_home_side=not args.all_sides,
             require_game_state=args.require_game_state,
             live_only=args.live_only,
+            train_cutoff_date=args.train_cutoff_date,
+            first_half_only=args.first_half_only,
+            game_state_only=args.game_state_only,
             model_name=args.model_name,
+            models_dir=Path(args.models_dir) if args.models_dir else None,
+            outputs_dir=Path(args.outputs_dir) if args.outputs_dir else None,
         )
     except ValueError as exc:
         print(f"  ERROR: {exc}")
@@ -556,7 +740,7 @@ def main():
     print(f"  Baseline Brier:        {report['baseline_metrics']['brier']}")
     print(f"  Top-70% lift:          {report['lift_table'][0]['lift_vs_base']}")
     print(f"  Model saved:           {report['model_path']}")
-    print(f"  Report saved:          {OUTPUTS_DIR / f'{args.model_name}_report.json'}")
+    print(f"  Report saved:          {report.get('report_path', report['scored_rows_path'])}")
     print(f"  Scored rows saved:     {report['scored_rows_path']}")
 
 

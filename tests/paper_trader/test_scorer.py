@@ -2,14 +2,27 @@
 
 The shrinkage formula must match live_bootstrap_model._apply_shrinkage exactly:
    p_cal = clip(base_rate + alpha * (raw - base_rate), 1e-6, 1 - 1e-6)
+
+Version-guard contract (tested below):
+  - load_model raises RuntimeError when the sklearn version recorded in the
+    bundle mismatches the runtime version (fail-loud instead of silent
+    predict() crash downstream).
+  - load_model emits a WARNING log when the bundle predates version-tagging
+    (sklearn_version key absent) rather than crashing on old artifacts.
 """
 from __future__ import annotations
 
+import logging
+import pickle
+import tempfile
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
+import sklearn
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 
 from paper_trader.scorer import load_model, score, engineer_features
 
@@ -133,3 +146,88 @@ def test_score_injects_nan_for_missing_feature_columns(bundle, monkeypatch):
     assert p_cal.shape == (1,)
     assert np.isfinite(p_raw[0])
     assert np.isfinite(p_cal[0])
+
+
+# ---------------------------------------------------------------------------
+# Version-guard tests
+# ---------------------------------------------------------------------------
+
+def _make_minimal_bundle(sklearn_version: str | None) -> dict:
+    """Build the smallest possible picklable bundle for version tests.
+
+    Uses a trivial (but real) sklearn Pipeline so pickle.dump succeeds.
+    The model is never called in these tests — only load_model() is exercised.
+    """
+    # A no-op pipeline that can be pickled without MagicMock issues.
+    stub_model = Pipeline([("scaler", StandardScaler())])
+    bundle = {
+        "model": stub_model,
+        "feature_cols": ["game_progress"],
+        "calibration": {"base_rate": 0.5, "alpha": 0.8},
+    }
+    if sklearn_version is not None:
+        bundle["sklearn_version"] = sklearn_version
+    return bundle
+
+
+def _write_bundle_pkl(bundle: dict, path: Path) -> None:
+    with path.open("wb") as fh:
+        pickle.dump(bundle, fh)
+
+
+def test_load_model_raises_when_sklearn_version_mismatches():
+    """load_model must raise RuntimeError (not swallow a warning) when the
+    sklearn version recorded in the bundle differs from the runtime version.
+    This is the fail-loud guard against the silent predict() breakage."""
+    runtime_version = sklearn.__version__
+    # Construct a fake version that is guaranteed to differ from runtime.
+    # Bump the patch component by 1 (or insert '.99' if parse fails).
+    parts = runtime_version.split(".")
+    try:
+        fake_version = ".".join(parts[:-1] + [str(int(parts[-1]) + 1)])
+    except (ValueError, IndexError):
+        fake_version = runtime_version + ".99"
+
+    bundle = _make_minimal_bundle(sklearn_version=fake_version)
+    with tempfile.NamedTemporaryFile(suffix=".pkl", delete=False) as tmp:
+        tmp_path = Path(tmp.name)
+    try:
+        _write_bundle_pkl(bundle, tmp_path)
+        with pytest.raises(RuntimeError, match="sklearn version mismatch"):
+            load_model(tmp_path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+def test_load_model_succeeds_when_sklearn_version_matches():
+    """load_model must not raise when the bundle's sklearn_version matches
+    the runtime version."""
+    runtime_version = sklearn.__version__
+    bundle = _make_minimal_bundle(sklearn_version=runtime_version)
+    with tempfile.NamedTemporaryFile(suffix=".pkl", delete=False) as tmp:
+        tmp_path = Path(tmp.name)
+    try:
+        _write_bundle_pkl(bundle, tmp_path)
+        result = load_model(tmp_path)
+        assert result["sklearn_version"] == runtime_version
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+def test_load_model_warns_when_sklearn_version_absent(caplog):
+    """Bundles pickled before version-tagging lack the sklearn_version key.
+    load_model must log a WARNING (not raise) so old artifacts don't
+    immediately break deployments — but the operator is alerted."""
+    bundle = _make_minimal_bundle(sklearn_version=None)
+    with tempfile.NamedTemporaryFile(suffix=".pkl", delete=False) as tmp:
+        tmp_path = Path(tmp.name)
+    try:
+        _write_bundle_pkl(bundle, tmp_path)
+        with caplog.at_level(logging.WARNING, logger="paper_trader.scorer"):
+            result = load_model(tmp_path)
+        assert "sklearn_version" not in result or result.get("sklearn_version") is None
+        assert any("sklearn_version" in rec.message for rec in caplog.records), (
+            "Expected a WARNING mentioning sklearn_version when key is absent"
+        )
+    finally:
+        tmp_path.unlink(missing_ok=True)

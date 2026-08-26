@@ -71,6 +71,27 @@ def test_phase_b_falls_back_to_pooled_when_decile_missing(pooled_json):
     assert e_up == pytest.approx(0.025)
 
 
+def test_load_pooled_means_populates_decile_table_when_present(tmp_path: Path):
+    p = tmp_path / "pooled_with_decile.json"
+    p.write_text(json.dumps({
+        "E_delta_given_rises": 0.025,
+        "E_delta_given_doesnt": -0.005,
+        "var_delta_pooled": 0.0009,
+        "decile_table": [
+            {"p_decile": d, "E_rises": 0.01 * (d + 1), "E_doesnt": -0.001 * (d + 1),
+             "var": 0.0001, "rises_n": 50, "doesnt_n": 450}
+            for d in range(10)
+        ],
+    }))
+    store = load_pooled_means(p)
+    assert store.decile_table is not None
+    assert len(store.decile_table) == 10
+    e_up, e_down, _ = expected_moves(p=0.65, mode="B", store=store)
+    # decile 6 → E_rises=0.07, E_doesnt=-0.007
+    assert e_up == pytest.approx(0.07)
+    assert e_down == pytest.approx(-0.007)
+
+
 def test_per_decile_means_groups_correctly():
     df = pd.DataFrame({
         "p_calibrated": np.linspace(0.0, 0.99, 100),

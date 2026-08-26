@@ -1,33 +1,43 @@
 # NBA Quant Prediction Model - Requirements
 # Install: pip install -r requirements.txt
+#
+# Pinned to the venv installed versions (2026-08-24).
+# scikit-learn is CRITICAL to pin: when sklearn drifts past the version
+# that pickled models/live_home_up_5m_bootstrap.pkl, load emits
+# InconsistentVersionWarning and every predict() raises
+# AttributeError("'SimpleImputer' object has no attribute '_fill_dtype'").
+# The paper trader catches these as error events and keeps ticking —
+# the loop looks healthy but no trade is ever placed. Retrain the model
+# after any sklearn upgrade (python live_bootstrap_model.py).
 
 # Data
-nba_api>=1.4.1
-requests>=2.31.0
+nba_api==1.11.4
+requests==2.33.1
 
 # Data processing
-pandas>=2.1.0
-numpy>=1.24.0
-numexpr>=2.10.2
-bottleneck>=1.4.2
-scipy>=1.11.0
+pandas==3.0.2
+numpy==2.4.4
+numexpr==2.14.1
+bottleneck==1.6.0
+scipy==1.17.1
 
 # Machine Learning
-scikit-learn>=1.3.0
-xgboost>=2.0.0
-lightgbm>=4.1.0
+# CRITICAL: do not upgrade without retraining live_home_up_5m_bootstrap.pkl
+scikit-learn==1.8.0
+xgboost==3.2.0
+lightgbm==4.6.0
 
 # Visualization & analysis
-matplotlib>=3.7.0
-seaborn>=0.12.0
+matplotlib==3.10.9
+seaborn==0.13.2
 
 # Kalshi API authentication
-cryptography>=41.0.0
+cryptography==47.0.0
 
 # Utilities
-python-dotenv>=1.0.0
-tqdm>=4.65.0
-joblib>=1.3.0
+python-dotenv==1.2.2
+tqdm==4.67.3
+joblib==1.5.3
 
 # Testing
-pytest>=7.4.0
+pytest==9.0.3

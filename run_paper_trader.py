@@ -340,7 +340,7 @@ def main(argv: list[str] | None = None) -> int:
                         default=Path("outputs/paper_trades/pooled_means.json"))
     parser.add_argument("--output-dir", type=Path,
                         default=Path("outputs/paper_trades"))
-    parser.add_argument("--mode-sizing", choices=["A", "B"], default="A")
+    parser.add_argument("--mode-sizing", choices=["A", "B"], default="B")
     parser.add_argument("--once", action="store_true",
                         help="Run a single tick and exit (smoke / debug).")
     args = parser.parse_args(argv)

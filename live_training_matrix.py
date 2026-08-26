@@ -17,6 +17,15 @@ from live_labeler import build_labeled_training_set
 
 ODDSAPI_FEATURES = ["oddsapi_home_consensus", "oddsapi_away_consensus", "oddsapi_books"]
 
+# Momentum feature constants
+# 3-minute game-time scoring run: captures scoring bursts within ~3 min of game clock.
+# We use a capture-tick window of 9 ticks (~3 min at 20s/tick) as a proxy.
+SCORE_RUN_GAME_SECONDS = 180  # 3 min of game time
+# YES mid velocity: first derivative over last 3 capture ticks (each ~20s apart).
+YES_MID_VELOCITY_TICKS = 3
+# Minimum elapsed game seconds before pace_delta is reliable (avoid divide-by-small).
+PACE_DELTA_MIN_SECONDS = 60
+
 
 def _as_timestamp(series: pd.Series) -> pd.Series:
     return pd.to_datetime(series, utc=True, errors="coerce")
@@ -30,6 +39,162 @@ def _safe_numeric(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
     for col in cols:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df
+
+
+def compute_momentum_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Compute per-ticker momentum/velocity features on a sorted, multi-row dataframe.
+
+    This is the single source of truth for momentum feature engineering — used on
+    BOTH the training path (inside build_in_game_training_matrix, applied per group)
+    and the live-scoring path (inside paper_trader.scorer.engineer_features, applied
+    to the full df passed to score()).
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Must be sorted by (ticker, captured_at) before calling. Must contain numeric
+        columns: ``home_score``, ``away_score``, ``yes_mid``, ``seconds_elapsed``,
+        ``total_points``, ``pregame_total``. The ``ticker`` column is used to group.
+
+    Returns
+    -------
+    pd.DataFrame
+        Input df with three new columns added (or overwritten if already present):
+
+        ``home_score_run_3min``
+            Net home scoring run over the trailing ~3 minutes of game clock.
+            Computed as: home_score_delta - away_score_delta over the trailing
+            window whose game-clock span is >= SCORE_RUN_GAME_SECONDS, looking
+            back up to 20 ticks. When fewer than 2 rows exist for a ticker (or
+            the game clock data is missing), returns NaN.
+
+        ``yes_mid_velocity``
+            Approximate first derivative of YES contract mid over the last 3
+            capture ticks: (yes_mid[t] - yes_mid[t-3]) / 3. Uses strictly past
+            data (shift(3) within the same ticker). Returns NaN when fewer than
+            4 rows exist for the ticker or yes_mid is missing.
+
+        ``pace_delta``
+            Actual vs expected scoring pace: projected_total - pregame_total,
+            where projected_total = total_points / minutes_elapsed * 48.
+            Returns NaN when seconds_elapsed < PACE_DELTA_MIN_SECONDS or
+            pregame_total is missing/zero.
+
+    Notes
+    -----
+    All windows are strictly backward-looking (shift/rolling on sorted data),
+    so there is no lookahead leakage.
+    """
+    df = df.copy()
+
+    # Ensure numeric dtypes for all columns we touch
+    for col in ["home_score", "away_score", "yes_mid", "seconds_elapsed",
+                "total_points", "pregame_total"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    # Initialize output columns as NaN
+    df["home_score_run_3min"] = np.nan
+    df["yes_mid_velocity"] = np.nan
+    df["pace_delta"] = np.nan
+
+    if "ticker" not in df.columns:
+        return df
+
+    # -----------------------------------------------------------------------
+    # Compute features per ticker group (each row belongs to one contract).
+    # All three features are vectorized — no Python-level row loops.
+    # -----------------------------------------------------------------------
+
+    has_scores = ("home_score" in df.columns and "away_score" in df.columns and
+                  "seconds_elapsed" in df.columns)
+    has_mid = "yes_mid" in df.columns
+    has_pace = ("total_points" in df.columns and "seconds_elapsed" in df.columns and
+                "pregame_total" in df.columns)
+
+    # ------------------------------------------------------------------
+    # yes_mid_velocity: (yes_mid[t] - yes_mid[t-3]) / 3
+    # shift(3) within ticker group — strictly backward-looking.
+    # ------------------------------------------------------------------
+    if has_mid:
+        df["yes_mid_velocity"] = (
+            df.groupby("ticker")["yes_mid"]
+            .transform(lambda s: (s - s.shift(YES_MID_VELOCITY_TICKS)) / YES_MID_VELOCITY_TICKS)
+        )
+
+    # ------------------------------------------------------------------
+    # pace_delta: projected_total - pregame_total
+    # projected_total = total_points / (seconds_elapsed / 60) * 48
+    # Purely pointwise — no trailing window needed.
+    # ------------------------------------------------------------------
+    if has_pace:
+        sec = df["seconds_elapsed"]
+        tp = df["total_points"]
+        pt = df["pregame_total"]
+        minutes = (sec / 60.0).clip(lower=1e-3)
+        valid = (sec >= PACE_DELTA_MIN_SECONDS) & tp.notna() & pt.notna() & (pt != 0)
+        projected = (tp / minutes * 48).where(valid, other=np.nan)
+        df["pace_delta"] = projected - pt.where(valid, other=np.nan)
+
+    # ------------------------------------------------------------------
+    # home_score_run_3min: net home scoring run over trailing ~3 min of
+    # game clock. Vectorized via shift(k) for k=1..MAX_LOOKBACK.
+    #
+    # Strategy: for each row, the "anchor" is the shift-k row that
+    # maximally spans SCORE_RUN_GAME_SECONDS backward. We sweep k from
+    # MAX_LOOKBACK down to 1; the first shift-k whose seconds_elapsed
+    # delta reaches SCORE_RUN_GAME_SECONDS wins. We use np.where to
+    # overwrite only the rows where the threshold is first exceeded.
+    #
+    # When no shift-k spans 3 min (early in the game), we fall back to
+    # the deepest available shift that at least has valid data (shift-1
+    # in the worst case). This matches the behavior of the original loop:
+    # "always keep the furthest valid prior row seen".
+    # ------------------------------------------------------------------
+    if has_scores:
+        MAX_LOOKBACK = 20
+        grp_sec = df.groupby("ticker")["seconds_elapsed"]
+        grp_h = df.groupby("ticker")["home_score"]
+        grp_a = df.groupby("ticker")["away_score"]
+
+        cur_sec = df["seconds_elapsed"]
+        cur_h = df["home_score"]
+        cur_a = df["away_score"]
+
+        # Start with shift(1) as the unconditional baseline anchor
+        # (matches the "best_j = j" fallback in the original loop).
+        s1_sec = grp_sec.transform(lambda s: s.shift(1))
+        s1_h = grp_h.transform(lambda s: s.shift(1))
+        s1_a = grp_a.transform(lambda s: s.shift(1))
+
+        run_h = cur_h - s1_h  # home delta from shift-1 anchor
+        run_a = cur_a - s1_a  # away delta from shift-1 anchor
+
+        # For k = 2..MAX_LOOKBACK: replace anchor wherever shift-k gives
+        # a game-clock span closer to (or beyond) SCORE_RUN_GAME_SECONDS.
+        # We sweep upward (2 → MAX_LOOKBACK); each pass locks in the
+        # anchor for rows that have now spanned >= 3 min OR extends the
+        # deepest-valid fallback anchor.
+        for k in range(2, MAX_LOOKBACK + 1):
+            sk_sec = grp_sec.transform(lambda s, _k=k: s.shift(_k))
+            sk_h = grp_h.transform(lambda s, _k=k: s.shift(_k))
+            sk_a = grp_a.transform(lambda s, _k=k: s.shift(_k))
+
+            has_sk = sk_sec.notna() & sk_h.notna() & sk_a.notna()
+            # Update: use shift-k wherever it is available (extending
+            # the fallback anchor), *and* wherever the 3-min threshold
+            # was not yet hit with the previous anchor.
+            should_update = has_sk & (
+                (cur_sec - sk_sec) <= SCORE_RUN_GAME_SECONDS  # threshold not yet crossed
+            )
+            run_h = run_h.where(~should_update, cur_h - sk_h)
+            run_a = run_a.where(~should_update, cur_a - sk_a)
+
+        # Mask out rows where current row itself has missing data.
+        valid_cur = cur_sec.notna() & cur_h.notna() & cur_a.notna()
+        df["home_score_run_3min"] = (run_h - run_a).where(valid_cur, other=np.nan)
+
     return df
 
 
@@ -91,6 +256,8 @@ def build_in_game_training_matrix(
         "label_beats_close_yes",
         "label_beats_close_home",
         "label_final_home_win",
+        "label_halftime_home_lead",
+        "label_halftime_margin_home",
     ]
     df = _safe_numeric(df, numeric_cols)
 
@@ -115,6 +282,16 @@ def build_in_game_training_matrix(
     df["flag_status_post"] = _status_flag(df["status_state"], "post")
     df["flag_has_game_state"] = df["home_score"].notna().astype(int)
     df["flag_has_time_state"] = df["seconds_elapsed"].notna().astype(int)
+
+    # ------------------------------------------------------------------
+    # Momentum / velocity features (sequential; per-ticker, sorted by
+    # captured_at so windows are strictly backward-looking).
+    # compute_momentum_features is the shared implementation imported by
+    # paper_trader.scorer.engineer_features — this is the single source of
+    # truth for both paths.
+    # ------------------------------------------------------------------
+    df = df.sort_values(["ticker", "captured_at"]).reset_index(drop=True)
+    df = compute_momentum_features(df)
 
     feature_cols = [
         "period",
@@ -166,7 +343,19 @@ def build_in_game_training_matrix(
         "flag_status_post",
         "flag_has_game_state",
         "flag_has_time_state",
+        # Momentum / velocity features (shared with live scorer via
+        # compute_momentum_features in live_training_matrix)
+        "home_score_run_3min",
+        "yes_mid_velocity",
+        "pace_delta",
     ]
+
+    # Halftime labels are optional — earlier pipeline stages may not have
+    # computed them yet.  Ensure the columns exist so matrix_cols selection
+    # always succeeds.
+    for _col in ("label_halftime_home_lead", "label_halftime_margin_home"):
+        if _col not in df.columns:
+            df[_col] = float("nan")
 
     matrix_cols = [
         "ticker",
@@ -187,6 +376,8 @@ def build_in_game_training_matrix(
         "label_home_up_5m",
         "label_beats_close_yes",
         "label_beats_close_home",
+        "label_halftime_home_lead",
+        "label_halftime_margin_home",
     ]
 
     matrix = df[matrix_cols].copy()
